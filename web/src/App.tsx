@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { DATA_RANGE, DAY_MS, clampT0, formatT0Input, parseT0Input } from './lib/ephemeris';
+import { DATA_RANGE, DAY_MS, clampT0, parseT0Input } from './lib/ephemeris';
+import {
+  T0_MAX,
+  T0_MIN,
+  initialT0Field,
+  t0Commit,
+  t0DaysChanged,
+  t0DraftChange,
+} from './lib/t0Field';
+import type { T0Field } from './lib/t0Field';
 import type { Ephemeris } from './lib/ephemeris';
 import { eventMetric, stats, timeline } from './lib/metrics';
 import { SITES } from './sites';
@@ -186,11 +195,51 @@ function Column({
 }) {
   const site = SITES.find((s) => s.slug === spec.site) ?? SITES[0]!;
 
-  // PRD 6: 범위 밖이면 알리고 범위 안 값으로 되돌린다. 입력·좌표 줄·지표가
-  // 모두 같은 clamp된 t0을 보여야 하므로 표시 문자열도 clamp 결과에서 만든다.
-  const t0 = clampT0(parseT0Input(spec.t0), days);
-  const t0Str = formatT0Input(t0);
-  const outOfRange = t0Str !== spec.t0;
+  // PRD 6: 범위 밖이면 알리고 범위 안 값으로 되돌린다. 단, 편집 중인 draft는
+  // 리셋하지 않는다 — 범위 안 완전값만 즉시 적용하고, 나머지는 blur/Enter에서
+  // 커밋한다 (연도 입력이 첫 자리에서 clamp되는 회귀 수정). 판정은 lib/t0Field.
+  const [field, setField] = useState<T0Field>(initialT0Field);
+  const lastApplied = useRef(spec.t0);
+
+  // 외부(시나리오 초기화 등)에서 applied가 바뀌면 draft와 경고를 리셋한다.
+  useEffect(() => {
+    if (spec.t0 !== lastApplied.current) {
+      lastApplied.current = spec.t0;
+      setField(initialT0Field());
+    }
+  }, [spec.t0]);
+
+  // D 변경으로 t0 + D가 범위 끝을 넘으면 clamp된 t0을 커밋한다.
+  useEffect(() => {
+    const d = t0DaysChanged(field, spec.t0, days);
+    setField(d.field);
+    if (d.apply !== null) {
+      lastApplied.current = d.apply;
+      onChange({ ...spec, t0: d.apply });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days]);
+
+  const appliedT0 = spec.t0; // 항상 canonical·clamp된 값
+  const t0 = parseT0Input(appliedT0);
+
+  const applyDecision = (raw: string) => {
+    const d = t0DraftChange(field, raw, days);
+    setField(d.field);
+    if (d.apply !== null) {
+      lastApplied.current = d.apply;
+      onChange({ ...spec, t0: d.apply });
+    }
+  };
+
+  const commit = () => {
+    const d = t0Commit(field, spec.t0, days);
+    setField(d.field);
+    if (d.apply !== null) {
+      lastApplied.current = d.apply;
+      onChange({ ...spec, t0: d.apply });
+    }
+  };
 
   return (
     <div className="column">
@@ -208,21 +257,27 @@ function Column({
         </select>{' '}
         <input
           type="datetime-local"
-          value={t0Str}
+          value={field.draft ?? appliedT0}
           step={3600}
-          onChange={(e) => onChange({ ...spec, t0: e.target.value })}
+          min={T0_MIN}
+          max={T0_MAX}
+          onChange={(e) => applyDecision(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+          }}
           aria-label="t0 (UTC)"
         />{' '}
         <button onClick={onRemove} aria-label="열 제거">
           ×
         </button>
       </div>
-      {outOfRange ? <div className="warn">계산 범위 2026-11-01~2027-05-01</div> : null}
+      {field.warn ? <div className="warn">계산 범위 2026-11-01~2027-05-01</div> : null}
       <h2>
         {site.name} <Badge />
       </h2>
       <div className="coords">
-        위도 {site.lat}°, 동경 {site.lon_e}° · t0 {t0Str.replace('T', ' ')} UTC
+        위도 {site.lat}°, 동경 {site.lon_e}° · t0 {appliedT0.replace('T', ' ')} UTC
       </div>
       <div className="source">
         <a href={site.sourceUrl}>좌표 출처</a>
