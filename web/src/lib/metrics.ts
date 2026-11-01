@@ -122,9 +122,9 @@ export function stats(eph: Ephemeris, t0: number, days: number): WindowStats {
 // PRD 4.7: 타임라인 셀. 1시간 1셀.
 export interface Timeline {
   cells: boolean[]; // 시간 순서
+  times: number[]; // 각 셀의 실제 샘플 시각 (epoch ms)
   start: number;
   stepMs: number;
-  bothVisibleMs: number; // 두 줄이 동시에 보이는 시간의 합
 }
 
 export function timeline(
@@ -134,15 +134,24 @@ export function timeline(
   days: number,
 ): { sun: Timeline; earth: Timeline; bothVisibleMs: number } {
   const stepMs = 3600_000;
-  const sunCells = windowSamples(sun, t0, days).map((s) => isVisible(s, 'sun'));
-  const earthCells = windowSamples(earth, t0, days).map((s) => isVisible(s, 'earth'));
+  // 샘플은 정시 단위라 t0이 정시가 아니면 첫 셀은 t0이 아니라
+  // t0 이후 첫 정시에 온다. 그릴 때는 times를 써야 축이 어긋나지 않는다.
+  const sunSamples = windowSamples(sun, t0, days);
+  const earthSamples = windowSamples(earth, t0, days);
+  const sunCells = sunSamples.map((s) => isVisible(s, 'sun'));
+  const earthCells = earthSamples.map((s) => isVisible(s, 'earth'));
   let both = 0;
   for (let i = 0; i < Math.min(sunCells.length, earthCells.length); i += 1) {
     if (sunCells[i] && earthCells[i]) both += 1;
   }
   return {
-    sun: { cells: sunCells, start: t0, stepMs, bothVisibleMs: 0 },
-    earth: { cells: earthCells, start: t0, stepMs, bothVisibleMs: 0 },
+    sun: { cells: sunCells, times: sunSamples.map((s) => Date.parse(s.t)), start: t0, stepMs },
+    earth: {
+      cells: earthCells,
+      times: earthSamples.map((s) => Date.parse(s.t)),
+      start: t0,
+      stepMs,
+    },
     bothVisibleMs: both * stepMs,
   };
 }

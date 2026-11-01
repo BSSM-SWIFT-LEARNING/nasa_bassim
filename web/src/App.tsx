@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { DATA_RANGE } from './lib/ephemeris';
+import { DATA_RANGE, DAY_MS, clampT0, formatT0Input, parseT0Input } from './lib/ephemeris';
 import type { Ephemeris } from './lib/ephemeris';
 import { eventMetric, stats, timeline } from './lib/metrics';
 import { SITES } from './sites';
 
-const DAY_MS = 86400_000;
 const HOUR_MS = 3600_000;
 
 interface ColumnSpec {
@@ -58,6 +57,7 @@ function MetricCard({ title, value, sub }: { title: string; value: string; sub?:
 
 function TimelineSvg({
   cells,
+  times,
   rowY,
   color,
   axisStart,
@@ -66,6 +66,7 @@ function TimelineSvg({
   showCursor,
 }: {
   cells: boolean[];
+  times: number[];
   rowY: number;
   color: string;
   axisStart: number;
@@ -81,7 +82,7 @@ function TimelineSvg({
       {cells.map((v, i) => (
         <rect
           key={i}
-          x={x(t0 + i * HOUR_MS)}
+          x={x(times[i]!)}
           y={rowY}
           width={Math.max(cellW - 0.4, 0.4)}
           height={14}
@@ -130,6 +131,7 @@ function Timelines({
         <g transform="translate(36,0)">
           <TimelineSvg
             cells={tl.sun.cells}
+            times={tl.sun.times}
             rowY={20}
             color="var(--sunlit)"
             axisStart={axisStart}
@@ -139,6 +141,7 @@ function Timelines({
           />
           <TimelineSvg
             cells={tl.earth.cells}
+            times={tl.earth.times}
             rowY={42}
             color="var(--earth)"
             axisStart={axisStart}
@@ -182,12 +185,12 @@ function Column({
   axisEnd: number;
 }) {
   const site = SITES.find((s) => s.slug === spec.site) ?? SITES[0]!;
-  const t0ms = Date.parse(`${spec.t0}:00Z`);
 
-  // PRD 6: 범위 밖이면 알리고 범위 안 값으로 되돌린다.
-  const clamped = Math.min(Math.max(t0ms, DATA_RANGE.start), DATA_RANGE.end - days * DAY_MS);
-  const outOfRange = !Number.isNaN(t0ms) && clamped !== t0ms;
-  const t0 = Number.isNaN(t0ms) ? DATA_RANGE.start : clamped;
+  // PRD 6: 범위 밖이면 알리고 범위 안 값으로 되돌린다. 입력·좌표 줄·지표가
+  // 모두 같은 clamp된 t0을 보여야 하므로 표시 문자열도 clamp 결과에서 만든다.
+  const t0 = clampT0(parseT0Input(spec.t0), days);
+  const t0Str = formatT0Input(t0);
+  const outOfRange = t0Str !== spec.t0;
 
   return (
     <div className="column">
@@ -205,7 +208,7 @@ function Column({
         </select>{' '}
         <input
           type="datetime-local"
-          value={spec.t0}
+          value={t0Str}
           step={3600}
           onChange={(e) => onChange({ ...spec, t0: e.target.value })}
           aria-label="t0 (UTC)"
@@ -214,14 +217,12 @@ function Column({
           ×
         </button>
       </div>
-      {outOfRange || Number.isNaN(t0ms) ? (
-        <div className="warn">계산 범위 2026-11-01~2027-05-01</div>
-      ) : null}
+      {outOfRange ? <div className="warn">계산 범위 2026-11-01~2027-05-01</div> : null}
       <h2>
         {site.name} <Badge />
       </h2>
       <div className="coords">
-        위도 {site.lat}°, 동경 {site.lon_e}° · t0 {spec.t0.replace('T', ' ')} UTC
+        위도 {site.lat}°, 동경 {site.lon_e}° · t0 {t0Str.replace('T', ' ')} UTC
       </div>
       <div className="source">
         <a href={site.sourceUrl}>좌표 출처</a>
@@ -342,10 +343,7 @@ export default function App() {
     let lo = Infinity;
     let hi = -Infinity;
     for (const c of columns) {
-      const t = Date.parse(`${c.t0}:00Z`);
-      const t0 = Number.isNaN(t)
-        ? DATA_RANGE.start
-        : Math.min(Math.max(t, DATA_RANGE.start), DATA_RANGE.end - days * DAY_MS);
+      const t0 = clampT0(parseT0Input(c.t0), days);
       lo = Math.min(lo, t0);
       hi = Math.max(hi, t0 + days * DAY_MS);
     }

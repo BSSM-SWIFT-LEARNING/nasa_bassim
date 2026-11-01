@@ -134,4 +134,15 @@ describe('타임라인 (PRD 4.7)', () => {
     // 11-14~12-01 구간은 태양·지구가 모두 뜨는 기간이므로 합이 0보다 크다.
     expect(tl.bothVisibleMs).toBeGreaterThan(0);
   });
+  it('정시가 아닌 t0이면 첫 셀은 t0 이후 첫 정시 샘플 시각에 온다', () => {
+    // 샘플은 정시 단위라 셀을 t0+i시간에 그리면 축이 어긋난다.
+    const tl = timeline(eph('im-2_sun'), eph('im-2_earth'), T('2026-12-12T16:17:00Z'), 14);
+    expect(tl.sun.times[0]).toBe(T('2026-12-12T17:00:00Z'));
+    expect(tl.earth.times[0]).toBe(T('2026-12-12T17:00:00Z'));
+    expect(tl.sun.times.length).toBe(tl.sun.cells.length);
+    // 마지막 셀도 실제 샘플 시각이고 창 끝(t0+D) 미만이다.
+    const last = tl.sun.times[tl.sun.times.length - 1]!;
+    expect(last % HOURS).toBe(0);
+    expect(last).toBeLessThan(T('2026-12-12T16:17:00Z') + 14 * 24 * HOURS);
+  });
 });
