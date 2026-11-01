@@ -139,4 +139,56 @@ class EphemerisServiceTest {
             throw new UncheckedIOException(e);
         }
     }
+
+    @Test
+    void errorBodyIsNotCachedSoNextRequestCallsUpstreamAgain() {
+        AtomicInteger n = new AtomicInteger();
+        UpstreamClient bad = params -> {
+            n.incrementAndGet();
+            return "API ERROR: bad input";
+        };
+        EphemerisService svc = service(bad);
+        assertThrows(HorizonsException.class, () -> svc.ephemeris(0.0, 0.0, "sun"));
+        assertThrows(HorizonsException.class, () -> svc.ephemeris(0.0, 0.0, "sun"));
+        assertEquals(2, n.get());
+    }
+
+    @Test
+    void errorBodyThenGoodResponseReturnsDataAndCaches() {
+        AtomicInteger n = new AtomicInteger();
+        UpstreamClient flaky = params -> {
+            if (n.incrementAndGet() == 1) {
+                return "API ERROR: bad input";
+            }
+            return canned;
+        };
+        EphemerisService svc = service(flaky);
+        assertThrows(HorizonsException.class, () -> svc.ephemeris(0.0, 0.0, "sun"));
+        Map<String, Object> doc = svc.ephemeris(0.0, 0.0, "sun");
+        assertEquals("sun", doc.get("body"));
+        assertEquals(2, n.get());
+        // The good response was cached: no third upstream call.
+        svc.ephemeris(0.0, 0.0, "sun");
+        assertEquals(2, n.get());
+    }
+
+    @Test
+    void diskWriteFailureDoesNotLeaveKeyStuckInFlight() {
+        DiskCache failingCache = new DiskCache(cacheDir) {
+            @Override
+            public void put(String key, String text) {
+                throw new UncheckedIOException(new IOException("disk full"));
+            }
+        };
+        AtomicInteger n = new AtomicInteger();
+        UpstreamClient upstream = params -> {
+            n.incrementAndGet();
+            return canned;
+        };
+        EphemerisService svc = new EphemerisService(failingCache, new HorizonsQueue(upstream, 2000));
+        assertThrows(UncheckedIOException.class, () -> svc.ephemeris(0.0, 0.0, "sun"));
+        // Key must not be stuck in inFlight: the retry really calls upstream.
+        assertThrows(UncheckedIOException.class, () -> svc.ephemeris(0.0, 0.0, "sun"));
+        assertEquals(2, n.get());
+    }
 }
