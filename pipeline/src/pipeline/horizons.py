@@ -27,6 +27,8 @@ class Sample:
     time: datetime
     azimuth_deg: float
     elevation_deg: float
+    # Horizons daylight/interfering-bodylight markers; stored but never used for judgement.
+    flags: str = ""
 
 
 def request_params(
@@ -75,5 +77,14 @@ def parse_table(text: str) -> list[Sample]:
         if match is None:
             raise HorizonsError(f"unexpected table row: {line!r}")
         moment = datetime.strptime(match[1], "%Y-%b-%d %H:%M").replace(tzinfo=UTC)
-        samples.append(Sample(moment, float(match[4]), float(match[5])))
+        flags = (match[2] + match[3]).strip()
+        samples.append(Sample(moment, float(match[4]), float(match[5]), flags))
     return samples
+
+
+def signature(text: str) -> str:
+    """The API's own attribution string, e.g. 'NASA/JPL Horizons API 1.2'."""
+    match = re.search(r'"source"\s*:\s*"([^"]+)".*?"version"\s*:\s*"([^"]+)"', text, re.DOTALL)
+    if match is None:
+        return "NASA/JPL Horizons API"
+    return f"{match[1]} {match[2]}"

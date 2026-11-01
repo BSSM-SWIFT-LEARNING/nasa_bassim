@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 echo "== repo: files over 100 MB"
-oversized=$(git ls-files -z | xargs -0 -I{} find {} -type f -size +100M)
+oversized=$(git ls-files -z | xargs -0 -I{} sh -c '[ -f "$1" ] || exit 0; find "$1" -type f -size +100M' _ {})
 if [ -n "$oversized" ]; then
   echo "$oversized"
   exit 1
@@ -25,5 +25,6 @@ echo "== web"
   cd web
   pnpm install --frozen-lockfile --silent
   pnpm exec oxlint --deny-warnings
+  pnpm exec vitest run
   pnpm build
 )
