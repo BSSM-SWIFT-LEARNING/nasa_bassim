@@ -1,0 +1,142 @@
+package lunar.backend;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+class EphemerisServiceTest {
+    static final Path FIXTURES = Path.of("..", "pipeline", "tests", "fixtures");
+
+    @TempDir
+    Path cacheDir;
+
+    AtomicInteger calls;
+    ConcurrentLinkedQueue<Long> callTimes;
+    String canned;
+
+    @BeforeEach
+    void setUp() throws IOException {
+        calls = new AtomicInteger();
+        callTimes = new ConcurrentLinkedQueue<>();
+        canned = Files.readString(FIXTURES.resolve("im2_sun.txt"));
+    }
+
+    private EphemerisService service(UpstreamClient upstream) {
+        return new EphemerisService(new DiskCache(cacheDir), new HorizonsQueue(upstream, 2000));
+    }
+
+    private UpstreamClient fakeUpstream() {
+        return params -> {
+            calls.incrementAndGet();
+            callTimes.add(System.currentTimeMillis());
+            return canned;
+        };
+    }
+
+    @Test
+    void upstreamCallsAreSpacedAtLeastTwoSeconds() {
+        EphemerisService svc = service(fakeUpstream());
+        svc.ephemeris(-84.78, 29.13, "sun");
+        svc.ephemeris(-84.78, 29.13, "earth");
+        List<Long> times = new ArrayList<>(callTimes);
+        assertEquals(2, times.size());
+        assertTrue(times.get(1) - times.get(0) >= 2000,
+                "gap was " + (times.get(1) - times.get(0)) + " ms");
+    }
+
+    @Test
+    void concurrentRequestsForSameKeyShareOneUpstreamCall() throws Exception {
+        EphemerisService svc = service(fakeUpstream());
+        CountDownLatch ready = new CountDownLatch(2);
+        var results = new ArrayList<Map<String, Object>>();
+        var errors = new ConcurrentLinkedQueue<Throwable>();
+        Runnable call = () -> {
+            ready.countDown();
+            try {
+                ready.await(5, TimeUnit.SECONDS);
+                synchronized (results) {
+                    results.add(svc.ephemeris(-84.78, 29.13, "sun"));
+                }
+            } catch (Throwable t) {
+                errors.add(t);
+            }
+        };
+        Thread a = Thread.startVirtualThread(call);
+        Thread b = Thread.startVirtualThread(call);
+        a.join(30_000);
+        b.join(30_000);
+        assertTrue(errors.isEmpty(), () -> "errors: " + errors);
+        assertEquals(1, calls.get());
+        assertEquals(2, results.size());
+    }
+
+    @Test
+    void cacheHitNeverCallsUpstreamAndRoundsToFourDecimals() {
+        EphemerisService svc = service(fakeUpstream());
+        svc.ephemeris(-84.78, 29.13, "sun");
+        // 29.1300001 rounds to 29.13: same cache key, no second upstream call.
+        Map<String, Object> doc = svc.ephemeris(-84.7800001, 29.13, "sun");
+        assertEquals(1, calls.get());
+        assertEquals("sun", doc.get("body"));
+        assertEquals(-84.78, (double) doc.get("lat"), 1e-9);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> samples = (List<Map<String, Object>>) doc.get("samples");
+        assertEquals("2026-11-14T00:00:00Z", samples.get(0).get("t"));
+        // A fresh service over the same cache dir still hits disk, not upstream.
+        EphemerisService svc2 = service(fakeUpstream());
+        svc2.ephemeris(-84.78, 29.13, "sun");
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    void invalidInputIsRejected() {
+        EphemerisService svc = service(fakeUpstream());
+        assertThrows(BadRequestException.class, () -> svc.ephemeris(-91.0, 0.0, "sun"));
+        assertThrows(BadRequestException.class, () -> svc.ephemeris(0.0, 361.0, "sun"));
+        assertThrows(BadRequestException.class, () -> svc.ephemeris(0.0, 0.0, "moon"));
+        assertThrows(BadRequestException.class, () -> svc.ephemeris(null, 0.0, "sun"));
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void upstreamFailureReturns502AndIsNotCached() {
+        AtomicInteger n = new AtomicInteger();
+        UpstreamClient flaky = params -> {
+            n.incrementAndGet();
+            throw new IOException("upstream down");
+        };
+        EphemerisService svc = service(flaky);
+        assertThrows(HorizonsException.class, () -> svc.ephemeris(0.0, 0.0, "sun"));
+        // Not cached: a healthy upstream on the next try is really called.
+        assertThrows(HorizonsException.class, () -> svc.ephemeris(0.0, 0.0, "sun"));
+        assertEquals(2, n.get());
+    }
+
+    @Test
+    void unparseableResponseReturns502AndIsNotCached() {
+        UpstreamClient bad = params -> "API ERROR: bad input";
+        EphemerisService svc = service(bad);
+        assertThrows(HorizonsException.class, () -> svc.ephemeris(0.0, 0.0, "sun"));
+        try {
+            assertEquals(0, Files.list(cacheDir).count());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+}

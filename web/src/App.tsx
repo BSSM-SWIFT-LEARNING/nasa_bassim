@@ -16,10 +16,22 @@ import { SITES } from './sites';
 
 const HOUR_MS = 3600_000;
 
+const CUSTOM = 'custom';
+
 interface ColumnSpec {
   id: number;
-  site: string;
+  site: string; // 큐레이션 slug 또는 'custom'
   t0: string; // datetime-local 값, UTC로 해석한다
+  lat?: number; // custom 열에서 적용된 좌표
+  lonE?: number;
+}
+
+// 사전 계산 열은 slug, 직접 입력 열은 좌표가 데이터 캐시 키다.
+// 좌표가 아직 없는 custom 열은 null을 돌려 요청을 만들지 않는다.
+function columnKey(c: ColumnSpec): string | null {
+  if (c.site !== CUSTOM) return c.site;
+  if (c.lat === undefined || c.lonE === undefined) return null;
+  return `custom:${c.lat}:${c.lonE}`;
 }
 
 // PRD 6: 처음 열면 §2 시나리오가 로드돼 있다.
@@ -33,6 +45,26 @@ interface SiteData {
   status: 'error' | 'ok';
   sun?: Ephemeris;
   earth?: Ephemeris;
+}
+
+// 큐레이션 열은 정적 JSON, 직접 입력 열은 /api/ephemeris 프록시(백엔드)에서 가져온다.
+async function fetchSiteData(key: string): Promise<SiteData> {
+  const urls = key.startsWith('custom:')
+    ? (() => {
+        const [, lat, lon] = key.split(':');
+        const q = `lat=${lat}&lon_e=${lon}`;
+        return [`/api/ephemeris?${q}&body=sun`, `/api/ephemeris?${q}&body=earth`];
+      })()
+    : [`/data/${key}_sun.json`, `/data/${key}_earth.json`];
+  const [sun, earth] = await Promise.all(
+    urls.map((u) =>
+      fetch(u).then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json() as Promise<Ephemeris>;
+      })
+    )
+  );
+  return { status: 'ok', sun, earth };
 }
 
 const fmtDate = (ms: number) => {
@@ -174,10 +206,16 @@ function Timelines({
   );
 }
 
+function parseCoord(raw: string, lo: number, hi: number): number | null {
+  const v = Number(raw);
+  return raw.trim() !== '' && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
+}
+
 function Column({
   spec,
   days,
   data,
+  loading,
   onRetry,
   onChange,
   onRemove,
@@ -187,13 +225,35 @@ function Column({
   spec: ColumnSpec;
   days: number;
   data: SiteData | undefined;
+  loading: boolean;
   onRetry: () => void;
   onChange: (next: ColumnSpec) => void;
   onRemove: () => void;
   axisStart: number;
   axisEnd: number;
 }) {
-  const site = SITES.find((s) => s.slug === spec.site) ?? SITES[0]!;
+  const isCustom = spec.site === CUSTOM;
+  const site = SITES.find((s) => s.slug === spec.site);
+
+  // 직접 입력 좌표: draft는 입력 중 자유롭게, 적용 버튼에서만 검증 후 요청한다.
+  const [latDraft, setLatDraft] = useState(spec.lat?.toString() ?? '');
+  const [lonDraft, setLonDraft] = useState(spec.lonE?.toString() ?? '');
+  const [coordError, setCoordError] = useState<string | null>(null);
+
+  const applyCoords = () => {
+    const lat = parseCoord(latDraft, -90, 90);
+    const lon = parseCoord(lonDraft, -360, 360);
+    if (lat === null) {
+      setCoordError('위도는 -90~90 사이 숫자');
+      return;
+    }
+    if (lon === null) {
+      setCoordError('동경은 -360~360 사이 숫자');
+      return;
+    }
+    setCoordError(null);
+    onChange({ ...spec, lat, lonE: lon });
+  };
 
   // PRD 6: 범위 밖이면 알리고 범위 안 값으로 되돌린다. 단, 편집 중인 draft는
   // 리셋하지 않는다 — 범위 안 완전값만 즉시 적용하고, 나머지는 blur/Enter에서
@@ -254,6 +314,7 @@ function Column({
               {s.name}
             </option>
           ))}
+          <option value={CUSTOM}>직접 좌표 입력</option>
         </select>{' '}
         <input
           type="datetime-local"
@@ -273,18 +334,66 @@ function Column({
         </button>
       </div>
       {field.warn ? <div className="warn">계산 범위 2026-11-01~2027-05-01</div> : null}
+      {isCustom ? (
+        <div className="custom-coords">
+          <label>
+            위도{' '}
+            <input
+              type="number"
+              step="any"
+              min={-90}
+              max={90}
+              value={latDraft}
+              onChange={(e) => setLatDraft(e.target.value)}
+              aria-label="위도"
+            />
+          </label>{' '}
+          <label>
+            동경{' '}
+            <input
+              type="number"
+              step="any"
+              min={-360}
+              max={360}
+              value={lonDraft}
+              onChange={(e) => setLonDraft(e.target.value)}
+              aria-label="동경"
+            />
+          </label>{' '}
+          <button onClick={applyCoords}>적용</button>
+          {coordError ? <div className="warn">{coordError}</div> : null}
+        </div>
+      ) : null}
       <h2>
-        {site.name} <Badge />
+        {isCustom ? '직접 입력 좌표' : site?.name} <Badge />
       </h2>
       <div className="coords">
-        위도 {site.lat}°, 동경 {site.lon_e}° · t0 {appliedT0.replace('T', ' ')} UTC
+        {isCustom && spec.lat !== undefined && spec.lonE !== undefined
+          ? `위도 ${spec.lat}°, 동경 ${spec.lonE}° · `
+          : !isCustom && site
+            ? `위도 ${site.lat}°, 동경 ${site.lon_e}° · `
+            : ''}
+        t0 {appliedT0.replace('T', ' ')} UTC
       </div>
       <div className="source">
-        <a href={site.sourceUrl}>좌표 출처</a>
+        {isCustom ? (
+          spec.lat !== undefined && spec.lonE !== undefined ? (
+            <span>
+              좌표 {spec.lat}°, {spec.lonE}°E
+            </span>
+          ) : null
+        ) : site ? (
+          <a href={site.sourceUrl}>좌표 출처</a>
+        ) : null}
       </div>
 
-      {!data ? (
-        <div className="state-box">데이터 불러오는 중</div>
+      {isCustom && spec.lat === undefined ? (
+        <div className="state-box">위도와 동경을 입력하고 적용하세요</div>
+      ) : loading || !data ? (
+        <div className="state-box">
+          데이터 불러오는 중
+          {isCustom ? <div className="sub">첫 요청은 몇 초 걸릴 수 있습니다</div> : null}
+        </div>
       ) : data.status === 'error' ? (
         <div className="state-box">
           데이터를 불러오지 못했습니다 · <button onClick={onRetry}>다시 시도</button>
@@ -369,26 +478,20 @@ export default function App() {
   const [retries, setRetries] = useState<Record<string, number>>({});
   const [newSite, setNewSite] = useState(SITES[0]!.slug);
 
-  const needed = useMemo(() => [...new Set(columns.map((c) => c.site))], [columns]);
+  const needed = useMemo(
+    () => [...new Set(columns.map(columnKey).filter((k): k is string => k !== null))],
+    [columns]
+  );
   const inflight = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    for (const slug of needed) {
-      if (data[slug] !== undefined || inflight.current.has(slug)) continue;
-      inflight.current.add(slug);
-      Promise.all([
-        fetch(`/data/${slug}_sun.json`).then((r) => {
-          if (!r.ok) throw new Error(String(r.status));
-          return r.json() as Promise<Ephemeris>;
-        }),
-        fetch(`/data/${slug}_earth.json`).then((r) => {
-          if (!r.ok) throw new Error(String(r.status));
-          return r.json() as Promise<Ephemeris>;
-        }),
-      ])
-        .then(([sun, earth]) => setData((d) => ({ ...d, [slug]: { status: 'ok', sun, earth } })))
-        .catch(() => setData((d) => ({ ...d, [slug]: { status: 'error' } })))
-        .finally(() => inflight.current.delete(slug));
+    for (const key of needed) {
+      if (data[key] !== undefined || inflight.current.has(key)) continue;
+      inflight.current.add(key);
+      fetchSiteData(key)
+        .then((d) => setData((prev) => ({ ...prev, [key]: d })))
+        .catch(() => setData((prev) => ({ ...prev, [key]: { status: 'error' } })))
+        .finally(() => inflight.current.delete(key));
     }
   }, [needed, data, retries]);
 
@@ -426,6 +529,7 @@ export default function App() {
               {s.name}
             </option>
           ))}
+          <option value={CUSTOM}>직접 좌표 입력</option>
         </select>
         <button
           disabled={columns.length >= 4}
@@ -445,26 +549,31 @@ export default function App() {
         </div>
       ) : (
         <div className="columns">
-          {columns.map((c) => (
+          {columns.map((c) => {
+            const key = columnKey(c);
+            return (
             <Column
               key={c.id}
               spec={c}
               days={days}
-              data={data[c.site]}
+              data={key === null ? undefined : data[key]}
+              loading={key !== null && data[key] === undefined}
               onRetry={() => {
+                if (key === null) return;
                 setData((d) => {
                   const next = { ...d };
-                  delete next[c.site];
+                  delete next[key];
                   return next;
                 });
-                setRetries((r) => ({ ...r, [c.site]: (r[c.site] ?? 0) + 1 }));
+                setRetries((r) => ({ ...r, [key]: (r[key] ?? 0) + 1 }));
               }}
               onChange={(next) => setColumns((cs) => cs.map((x) => (x.id === c.id ? next : x)))}
               onRemove={() => setColumns((cs) => cs.filter((x) => x.id !== c.id))}
               axisStart={axisStart}
               axisEnd={axisEnd}
             />
-          ))}
+            );
+          })}
         </div>
       )}
 

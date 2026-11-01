@@ -20,6 +20,12 @@ echo "== pipeline"
   uv run --frozen pytest -q
 )
 
+echo "== backend"
+(
+  cd backend
+  ./gradlew test --console=plain
+)
+
 echo "== web"
 (
   cd web
