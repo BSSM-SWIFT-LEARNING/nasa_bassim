@@ -12,6 +12,7 @@ import {
 import type { T0Field } from './lib/t0Field';
 import type { Ephemeris } from './lib/ephemeris';
 import { eventMetric, stats, timeline } from './lib/metrics';
+import { tickStepMs } from './lib/timelineTicks';
 import { SITES } from './sites';
 
 const HOUR_MS = 3600_000;
@@ -91,7 +92,7 @@ function MetricCard({ title, value, sub }: { title: string; value: string; sub?:
         <Badge />
       </div>
       <div className="value">{value}</div>
-      {sub ? <div className="sub">{sub}</div> : null}
+      <div className="sub">{sub ?? ''}</div>
     </div>
   );
 }
@@ -105,6 +106,7 @@ function TimelineSvg({
   axisEnd,
   t0,
   showCursor,
+  width,
 }: {
   cells: boolean[];
   times: number[];
@@ -114,8 +116,9 @@ function TimelineSvg({
   axisEnd: number;
   t0: number;
   showCursor: boolean;
+  width: number;
 }) {
-  const W = 560; // viewBox 600 - 왼쪽 레이블 40
+  const W = width;
   const x = (t: number) => ((t - axisStart) / (axisEnd - axisStart)) * W;
   const cellW = (HOUR_MS / (axisEnd - axisStart)) * W;
   return (
@@ -153,23 +156,47 @@ function Timelines({
   axisEnd: number;
 }) {
   const tl = timeline(sun, earth, t0, days);
-  const W = 560;
+
+  // svg는 width:100%로 viewBox 600이 화면 폭에 맞게 축소된다. 눈금 글자가
+  // 실제 렌더링 기준 11px가 되도록 표시 폭을 재서 viewBox 단위 글자 크기를 역산한다.
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [renderedW, setRenderedW] = useState(600);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setRenderedW(el.getBoundingClientRect().width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const scale = renderedW > 0 ? renderedW / 600 : 1;
+  const font = Math.max(11, 11 / scale);
+  // 행 레이블('태양'/'지구')이 막대와 겹치지 않게 레이블 영역을 글자 크기에 맞춘다.
+  const labelW = Math.max(36, 2 * font + 8);
+  const W = 600 - labelW;
   const x = (t: number) => ((t - axisStart) / (axisEnd - axisStart)) * W;
-  const spanDays = (axisEnd - axisStart) / DAY_MS;
-  const tickStepDays = spanDays > 60 ? 14 : spanDays > 30 ? 7 : spanDays > 15 ? 3 : 1;
+  // 눈금 간격도 렌더링 px 기준으로 골라 레이블끼리 겹치지 않게 한다.
+  const tickStep = tickStepMs(axisEnd - axisStart, W * scale);
   const ticks: number[] = [];
-  const firstTick = Math.ceil(axisStart / (tickStepDays * DAY_MS)) * tickStepDays * DAY_MS;
-  for (let t = firstTick; t <= axisEnd; t += tickStepDays * DAY_MS) ticks.push(t);
+  for (let t = Math.ceil(axisStart / tickStep) * tickStep; t <= axisEnd; t += tickStep)
+    ticks.push(t);
+  const tickTextY = 70 + font;
+  const vbH = tickTextY + font * 0.4;
   return (
     <div>
-      <svg className="timeline" viewBox="0 0 600 86" role="img">
-        <text x={0} y={30} fontSize={10} fill="var(--muted)">
+      <svg
+        className="timeline"
+        ref={svgRef}
+        viewBox={`0 0 600 ${vbH}`}
+        role="img"
+        aria-label={`태양과 지구 가시성 타임라인. t0 이후 ${days}일 동안 둘 다 가능한 시간은 ${fmtDuration(tl.bothVisibleMs)}`}
+      >
+        <text x={0} y={30} fontSize={font} fill="var(--muted)">
           태양
         </text>
-        <text x={0} y={52} fontSize={10} fill="var(--muted)">
+        <text x={0} y={52} fontSize={font} fill="var(--muted)">
           지구
         </text>
-        <g transform="translate(36,0)">
+        <g transform={`translate(${labelW},0)`}>
           <TimelineSvg
             cells={tl.sun.cells}
             times={tl.sun.times}
@@ -179,6 +206,7 @@ function Timelines({
             axisEnd={axisEnd}
             t0={t0}
             showCursor
+            width={W}
           />
           <TimelineSvg
             cells={tl.earth.cells}
@@ -189,12 +217,13 @@ function Timelines({
             axisEnd={axisEnd}
             t0={t0}
             showCursor={false}
+            width={W}
           />
           <line x1={0} x2={W} y1={64} y2={64} stroke="var(--border)" />
           {ticks.map((t) => (
             <g key={t}>
               <line x1={x(t)} x2={x(t)} y1={64} y2={69} stroke="var(--muted)" />
-              <text x={x(t)} y={80} fontSize={9} fill="var(--muted)" textAnchor="middle">
+              <text x={x(t)} y={tickTextY} fontSize={font} fill="var(--muted)" textAnchor="middle">
                 {fmtDate(t).slice(0, 5)}
               </text>
             </g>
@@ -319,7 +348,7 @@ function Column({
         <input
           type="datetime-local"
           value={field.draft ?? appliedT0}
-          step={3600}
+          step={60}
           min={T0_MIN}
           max={T0_MAX}
           onChange={(e) => applyDecision(e.target.value)}
@@ -329,13 +358,20 @@ function Column({
           }}
           aria-label="t0 (UTC)"
         />{' '}
-        <button onClick={onRemove} aria-label="열 제거">
+        <button data-remove-col={spec.id} onClick={onRemove} aria-label="열 제거">
           ×
         </button>
       </div>
       {field.warn ? <div className="warn">계산 범위 2026-11-01~2027-05-01</div> : null}
       {isCustom ? (
-        <div className="custom-coords">
+        <form
+          noValidate
+          className="custom-coords"
+          onSubmit={(e) => {
+            e.preventDefault();
+            applyCoords();
+          }}
+        >
           <label>
             위도{' '}
             <input
@@ -344,7 +380,10 @@ function Column({
               min={-90}
               max={90}
               value={latDraft}
-              onChange={(e) => setLatDraft(e.target.value)}
+              onChange={(e) => {
+                setLatDraft(e.target.value);
+                setCoordError(null);
+              }}
               aria-label="위도"
             />
           </label>{' '}
@@ -356,13 +395,16 @@ function Column({
               min={-360}
               max={360}
               value={lonDraft}
-              onChange={(e) => setLonDraft(e.target.value)}
+              onChange={(e) => {
+                setLonDraft(e.target.value);
+                setCoordError(null);
+              }}
               aria-label="동경"
             />
           </label>{' '}
-          <button onClick={applyCoords}>적용</button>
+          <button type="submit">적용</button>
           {coordError ? <div className="warn">{coordError}</div> : null}
-        </div>
+        </form>
       ) : null}
       <h2>
         {isCustom ? '직접 입력 좌표' : site?.name} <Badge />
@@ -478,6 +520,23 @@ export default function App() {
   const [retries, setRetries] = useState<Record<string, number>>({});
   const [newSite, setNewSite] = useState(SITES[0]!.slug);
 
+  // 열 제거 버튼이 사라져도 포커스가 body로 떨어지지 않게, 제거 후 옮길
+  // 대상(다음/이전 열의 제거 버튼, 없으면 복원 버튼)을 기억해 둔다.
+  const pendingFocus = useRef<number | 'restore' | null>(null);
+  const removeColumn = (id: number) => {
+    const idx = columns.findIndex((x) => x.id === id);
+    const next = columns.filter((x) => x.id !== id);
+    pendingFocus.current = next.length === 0 ? 'restore' : (next[idx] ?? next[idx - 1])!.id;
+    setColumns(next);
+  };
+  useEffect(() => {
+    if (pendingFocus.current === null) return;
+    const target = pendingFocus.current;
+    pendingFocus.current = null;
+    const sel = target === 'restore' ? '[data-restore]' : `[data-remove-col="${target}"]`;
+    document.querySelector<HTMLElement>(sel)?.focus();
+  }, [columns]);
+
   const needed = useMemo(
     () => [...new Set(columns.map(columnKey).filter((k): k is string => k !== null))],
     [columns]
@@ -545,7 +604,9 @@ export default function App() {
       {columns.length === 0 ? (
         <div className="state-box" style={{ marginTop: 24 }}>
           <p>지점을 고르세요</p>
-          <button onClick={() => setColumns(DEFAULT_COLUMNS)}>예시 시나리오 불러오기</button>
+          <button data-restore onClick={() => setColumns(DEFAULT_COLUMNS)}>
+            예시 시나리오 불러오기
+          </button>
         </div>
       ) : (
         <div className="columns">
@@ -568,7 +629,7 @@ export default function App() {
                 setRetries((r) => ({ ...r, [key]: (r[key] ?? 0) + 1 }));
               }}
               onChange={(next) => setColumns((cs) => cs.map((x) => (x.id === c.id ? next : x)))}
-              onRemove={() => setColumns((cs) => cs.filter((x) => x.id !== c.id))}
+              onRemove={() => removeColumn(c.id)}
               axisStart={axisStart}
               axisEnd={axisEnd}
             />
