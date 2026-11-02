@@ -122,6 +122,17 @@ describe('t0DaysChanged — D 변경', () => {
     expect(d.apply).toBeNull();
     expect(d.field).toBe(field);
   });
+
+  it('외부 리셋 직후 판정은 경고를 되살리지 않는다', () => {
+    // 재현: t0를 범위 끝 근처로 옮겨 경고를 띄우고 D=28로 clamp한 뒤
+    // '처음으로'가 applied를 기본값으로 되돌린다. 리셋된 필드로 판정하면
+    // 커밋도 경고도 없어야 한다 — 오래된 field(warn:true)를 넘기면 안 된다.
+    const clamped = t0DaysChanged(initialT0Field(), '2027-04-25T00:00', 28);
+    expect(clamped.field.warn).toBe(true);
+    const reset = t0DaysChanged(initialT0Field(), '2026-11-14T00:00', 14);
+    expect(reset.apply).toBeNull();
+    expect(reset.field).toEqual({ draft: null, warn: false });
+  });
 });
 
 describe('min/max', () => {

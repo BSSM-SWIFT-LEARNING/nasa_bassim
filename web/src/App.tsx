@@ -36,6 +36,7 @@ function columnKey(c: ColumnSpec): string | null {
 }
 
 // PRD 6: 처음 열면 §2 시나리오가 로드돼 있다.
+const DEFAULT_DAYS = 14;
 const DEFAULT_COLUMNS: ColumnSpec[] = [
   { id: 1, site: 'im-2', t0: '2026-11-14T00:00' },
   { id: 2, site: 'im-2', t0: '2026-11-28T00:00' },
@@ -290,24 +291,22 @@ function Column({
   const [field, setField] = useState<T0Field>(initialT0Field);
   const lastApplied = useRef(spec.t0);
 
-  // 외부(시나리오 초기화 등)에서 applied가 바뀌면 draft와 경고를 리셋한다.
+  // applied(외부 리셋 포함)나 D가 바뀌면 한 effect에서 필드를 다시 판정한다.
+  // apply 여부는 applied·days만으로 결정되므로, 같은 커밋에서 렌더 시점의
+  // 오래된 field로 warn을 되살리는 일이 없다.
   useEffect(() => {
-    if (spec.t0 !== lastApplied.current) {
-      lastApplied.current = spec.t0;
-      setField(initialT0Field());
-    }
-  }, [spec.t0]);
-
-  // D 변경으로 t0 + D가 범위 끝을 넘으면 clamp된 t0을 커밋한다.
-  useEffect(() => {
-    const d = t0DaysChanged(field, spec.t0, days);
-    setField(d.field);
+    const external = spec.t0 !== lastApplied.current;
+    if (external) lastApplied.current = spec.t0;
+    const d = t0DaysChanged(initialT0Field(), spec.t0, days);
     if (d.apply !== null) {
       lastApplied.current = d.apply;
       onChange({ ...spec, t0: d.apply });
+      setField(d.field);
+    } else if (external) {
+      setField(initialT0Field());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days]);
+  }, [spec.t0, days]);
 
   const appliedT0 = spec.t0; // 항상 canonical·clamp된 값
   const t0 = parseT0Input(appliedT0);
@@ -515,14 +514,15 @@ let nextId = 10;
 
 export default function App() {
   const [columns, setColumns] = useState<ColumnSpec[]>(DEFAULT_COLUMNS);
-  const [days, setDays] = useState(14);
+  const [days, setDays] = useState(DEFAULT_DAYS);
   const [data, setData] = useState<Record<string, SiteData>>({});
   const [retries, setRetries] = useState<Record<string, number>>({});
   const [newSite, setNewSite] = useState(SITES[0]!.slug);
 
-  // 열 제거 버튼이 사라져도 포커스가 body로 떨어지지 않게, 제거 후 옮길
-  // 대상(다음/이전 열의 제거 버튼, 없으면 복원 버튼)을 기억해 둔다.
-  const pendingFocus = useRef<number | 'restore' | null>(null);
+  // 열 제거 버튼이나 예시 복원 버튼이 사라져도 포커스가 body로 떨어지지 않게,
+  // 사라진 뒤 옮길 대상(다음/이전 열의 제거 버튼, 복원 버튼, 첫 열 지점 선택)을
+  // 기억해 둔다.
+  const pendingFocus = useRef<number | 'restore' | 'site' | null>(null);
   const removeColumn = (id: number) => {
     const idx = columns.findIndex((x) => x.id === id);
     const next = columns.filter((x) => x.id !== id);
@@ -533,7 +533,12 @@ export default function App() {
     if (pendingFocus.current === null) return;
     const target = pendingFocus.current;
     pendingFocus.current = null;
-    const sel = target === 'restore' ? '[data-restore]' : `[data-remove-col="${target}"]`;
+    const sel =
+      target === 'restore'
+        ? '[data-restore]'
+        : target === 'site'
+          ? '.columns [aria-label="지점"]'
+          : `[data-remove-col="${target}"]`;
     document.querySelector<HTMLElement>(sel)?.focus();
   }, [columns]);
 
@@ -598,13 +603,28 @@ export default function App() {
         >
           열 추가
         </button>
-        <button onClick={() => setColumns(DEFAULT_COLUMNS)}>이 시나리오를 처음으로</button>
+        <button
+          onClick={() => {
+            setColumns(DEFAULT_COLUMNS);
+            setDays(DEFAULT_DAYS);
+          }}
+        >
+          이 시나리오를 처음으로
+        </button>
       </div>
 
       {columns.length === 0 ? (
         <div className="state-box" style={{ marginTop: 24 }}>
           <p>지점을 고르세요</p>
-          <button data-restore onClick={() => setColumns(DEFAULT_COLUMNS)}>
+          <button
+            data-restore
+            onClick={() => {
+              // 버튼이 사라지므로 복원 후 첫 열 지점 선택으로 포커스를 옮긴다.
+              pendingFocus.current = 'site';
+              setColumns(DEFAULT_COLUMNS);
+              setDays(DEFAULT_DAYS);
+            }}
+          >
             예시 시나리오 불러오기
           </button>
         </div>
