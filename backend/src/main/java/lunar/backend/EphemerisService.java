@@ -53,30 +53,41 @@ public class EphemerisService {
 
         String text = cache.get(key);
         if (text == null) {
-            CompletableFuture<String> future = inFlight.computeIfAbsent(key, k -> {
-                // Re-check under the inFlight lock: another request may have
-                // finished its upstream call and cached the result since our
-                // cache.get above missed.
-                String cached = cache.get(key);
-                return cached != null
-                        ? CompletableFuture.completedFuture(cached)
-                        : queue.submit(params);
-            });
+            CompletableFuture<String> candidate = new CompletableFuture<>();
+            CompletableFuture<String> future = inFlight.putIfAbsent(key, candidate);
+            if (future == null) {
+                future = candidate;
+                try {
+                    // A previous operation may have published after our first miss.
+                    String cached = cache.get(key);
+                    if (cached != null) {
+                        finishLoad(key, candidate, cached, null);
+                    } else {
+                        queue.submit(params).whenComplete((response, failure) -> {
+                            if (failure == null) {
+                                try {
+                                    Horizons.parseTable(response);
+                                    cache.put(key, response);
+                                } catch (Throwable t) {
+                                    failure = t;
+                                }
+                            }
+                            finishLoad(key, candidate, response, failure);
+                        });
+                    }
+                } catch (Throwable t) {
+                    finishLoad(key, candidate, null, t);
+                }
+            }
             try {
+                // The shared operation includes validation and cache publication.
                 text = future.get();
-                // Parse before caching: never cache an error or unparseable response.
-                Horizons.parseTable(text);
-                // Publish to the cache before clearing inFlight so a request
-                // that missed cache.get just before this put still finds the
-                // result via the inFlight future or the re-check above.
-                cache.put(key, text);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new HorizonsException("interrupted waiting for Horizons", e);
             } catch (ExecutionException e) {
+                if (e.getCause() instanceof java.io.UncheckedIOException io) throw io;
                 throw upstreamFailure(e.getCause());
-            } finally {
-                inFlight.remove(key, future);
             }
         }
 
@@ -99,6 +110,15 @@ public class EphemerisService {
         }
         doc.put("samples", rows);
         return doc;
+    }
+
+    private void finishLoad(String key, CompletableFuture<String> future,
+            String text, Throwable failure) {
+        // Remove only after publication, and before waking callers so a failed
+        // request can retry immediately. Interrupted waiters never remove the task.
+        inFlight.remove(key, future);
+        if (failure == null) future.complete(text);
+        else future.completeExceptionally(failure);
     }
 
     static double round4(double v) {

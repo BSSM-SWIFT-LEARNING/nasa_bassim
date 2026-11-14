@@ -62,28 +62,52 @@ class EphemerisServiceTest {
 
     @Test
     void concurrentRequestsForSameKeyShareOneUpstreamCall() throws Exception {
-        EphemerisService svc = service(fakeUpstream());
-        CountDownLatch ready = new CountDownLatch(2);
-        var results = new ArrayList<Map<String, Object>>();
-        var errors = new ConcurrentLinkedQueue<Throwable>();
-        Runnable call = () -> {
-            ready.countDown();
-            try {
-                ready.await(5, TimeUnit.SECONDS);
-                synchronized (results) {
-                    results.add(svc.ephemeris(-84.78, 29.13, "sun"));
-                }
-            } catch (Throwable t) {
-                errors.add(t);
+        CountDownLatch upstreamStarted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger writes = new AtomicInteger();
+        DiskCache cache = new DiskCache(cacheDir) {
+            @Override
+            public void put(String key, String text) {
+                writes.incrementAndGet();
+                super.put(key, text);
             }
         };
-        Thread a = Thread.startVirtualThread(call);
-        Thread b = Thread.startVirtualThread(call);
-        a.join(30_000);
-        b.join(30_000);
-        assertTrue(errors.isEmpty(), () -> "errors: " + errors);
-        assertEquals(1, calls.get());
-        assertEquals(2, results.size());
+        try (HorizonsQueue queue = new HorizonsQueue(params -> {
+            calls.incrementAndGet();
+            upstreamStarted.countDown();
+            if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("test timed out");
+            return canned;
+        }, 0)) {
+            EphemerisService svc = new EphemerisService(cache, queue);
+            var results = new ConcurrentLinkedQueue<Map<String, Object>>();
+            var errors = new ConcurrentLinkedQueue<Throwable>();
+            Runnable call = () -> {
+                try {
+                    results.add(svc.ephemeris(-84.78, 29.13, "sun"));
+                } catch (Throwable t) {
+                    errors.add(t);
+                }
+            };
+            Thread a = Thread.startVirtualThread(call);
+            Thread b = null;
+            try {
+                assertTrue(upstreamStarted.await(5, TimeUnit.SECONDS));
+                b = Thread.startVirtualThread(call);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (b.getState() != Thread.State.WAITING && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertEquals(Thread.State.WAITING, b.getState(), "second caller must overlap");
+            } finally {
+                release.countDown();
+                a.join(10_000);
+                if (b != null) b.join(10_000);
+            }
+            assertTrue(errors.isEmpty(), () -> "errors: " + errors);
+            assertEquals(1, calls.get());
+            assertEquals(1, writes.get());
+            assertEquals(2, results.size());
+        }
     }
 
     @Test
