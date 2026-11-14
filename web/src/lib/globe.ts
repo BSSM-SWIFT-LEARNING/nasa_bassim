@@ -130,7 +130,9 @@ export function quatSlerp(a: Quat, b: Quat, t: number): Quat {
 }
 
 /** 화면에 그려지는 달의 반지름. 그림 영역의 반폭을 1로 본 값이고 zoom 1일 때의 크기다. */
-export const BASE_RADIUS = 0.9;
+export const BASE_RADIUS = 0.82;
+export const CAMERA_DISTANCE = 4;
+export const CAMERA_FOCAL = BASE_RADIUS * Math.sqrt(CAMERA_DISTANCE ** 2 - 1);
 
 export interface ScreenPoint {
   x: number; // 그림 영역 가운데가 0, 오른쪽 끝이 1
@@ -138,11 +140,11 @@ export interface ScreenPoint {
   visible: boolean; // 달의 앞쪽에 있고 그림 영역 안에 있다
 }
 
-/** 달 위의 한 점이 화면 어디에 찍히는지. 정사영(orthographic)이다. */
+/** 달 위의 한 점이 화면 어디에 찍히는지. 렌더러의 원근 카메라와 같은 투영식이다. */
 export function projectToScreen(m: Mat3, zoom: number, world: Vec3): ScreenPoint {
   const v = rotate(m, world);
-  const r = BASE_RADIUS * zoom;
-  const x = v[0] * r;
-  const y = -v[1] * r;
-  return { x, y, visible: v[2] > 0.03 && x * x + y * y < 0.96 * 0.96 };
+  const scale = CAMERA_FOCAL * zoom / (CAMERA_DISTANCE - v[2]);
+  const x = v[0] * scale;
+  const y = -v[1] * scale;
+  return { x, y, visible: v[2] > 1 / CAMERA_DISTANCE && Math.abs(x) < 0.96 && Math.abs(y) < 0.96 };
 }

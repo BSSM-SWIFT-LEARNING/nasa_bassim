@@ -401,7 +401,7 @@ function Column({
         <Badge />
       </div>
       <label className="controls">
-        <span className="t0-label">시작 시각 t0 (UTC)</span>
+        <span className="t0-label">시작 시각 (UTC)</span>
         <input
           type="datetime-local"
           value={field.draft ?? appliedT0}
@@ -515,36 +515,40 @@ function ColumnBody({
       : { value: `${m.days!.toFixed(1)}일`, sub: m.eventTime ? fmtDate(m.eventTime) : undefined };
 
   const tl = timeline(sun, earth, t0, days);
+  const overlapPercent = Math.round(tl.bothVisibleMs / (days * DAY_MS) * 100);
 
   return (
     <>
       <div className="lead">
         <div className="lead-label">
-          태양과 지구가 함께 보이는 시간
+          핵심 비교 · 태양과 지구 동시 가시
           {best ? <span className="best">가장 김</span> : null}
         </div>
         <div className="lead-value">
           {fmtDuration(tl.bothVisibleMs)}
-          <span className="lead-of"> / {days}일</span>
+          <span className="lead-of">관찰 기간 {days}일 중 {overlapPercent}%</span>
         </div>
+        <div className="overlap-meter" role="meter" aria-label="태양과 지구 동시 가시 비율" aria-valuenow={overlapPercent} aria-valuemin={0} aria-valuemax={100}>
+          <span style={{ width: `${overlapPercent}%` }} />
+        </div>
+        <p className="metric-explanation">햇빛과 지구 가시성이 동시에 확보되는 시간입니다.</p>
       </div>
+      <div className={`darkness-summary${sunStats.longestDarkHours > 0 ? ' has-darkness' : ''}`}>
+        <span>주의해서 볼 값 · 최장 연속 암흑</span>
+        <strong>{fmtDuration(sunStats.longestDarkHours * HOUR_MS)}</strong>
+        <p>{sunStats.longestDarkHours > 0 ? '이 구간에는 태양이 보이지 않아 별도의 전력 계획이 필요합니다.' : '관찰 기간의 시간별 샘플에서 연속 암흑이 없습니다.'}</p>
+      </div>
+      <div className="availability-pair">
+        <div><span>햇빛이 보이는 비율</span><strong>{Math.round(sunStats.fraction * 100)}%</strong><div className="mini-track"><i style={{width: `${sunStats.fraction * 100}%`, background: 'var(--sunlit)'}} /></div></div>
+        <div><span>지구가 보이는 비율</span><strong>{Math.round(earthStats.fraction * 100)}%</strong><div className="mini-track"><i style={{width: `${earthStats.fraction * 100}%`, background: 'var(--earth)'}} /></div></div>
+      </div>
+      <p className="timeline-heading">언제 보이나요? <span>모든 열에 같은 날짜 축 적용</span></p>
       <Timelines tl={tl} t0={t0} days={days} axisStart={axisStart} axisEnd={axisEnd} />
+      <details className="secondary-metrics">
+        <summary>다음 일출·일몰과 태양 고도 보기</summary>
       <div className="metric-grid">
         <MetricCard title={nextSun.title} {...card(nextSun)} />
         <MetricCard title={nextEarth.title} {...card(nextEarth)} />
-        <MetricCard
-          title="일조 비율"
-          value={sunStats.fraction === 0 ? '기간 내 일조 없음' : `${Math.round(sunStats.fraction * 100)}%`}
-        />
-        <MetricCard
-          title="지구 가시 비율"
-          value={
-            earthStats.fraction === 0
-              ? '기간 내 가시 없음'
-              : `${Math.round(earthStats.fraction * 100)}%`
-          }
-        />
-        <MetricCard title="최장 연속 암흑" value={`${sunStats.longestDarkHours}시간`} />
         <MetricCard
           title="일조 중 최대 태양 고도"
           value={
@@ -554,6 +558,7 @@ function ColumnBody({
           }
         />
       </div>
+      </details>
     </>
   );
 }
@@ -635,6 +640,12 @@ export default function App() {
     return comparisonSummary(states, days);
   }, [columns, data, days]);
 
+  const readyCount = columns.filter((c) => {
+    const key = columnKey(c);
+    const d = key === null ? undefined : data[key];
+    return d?.status === 'ok' && d.sun && d.earth;
+  }).length;
+  const comparisonReady = columns.length >= 2 && readyCount === columns.length;
   const canAdd = columns.length < 4;
   const addColumn = (site: string) =>
     setColumns((c) =>
@@ -652,11 +663,18 @@ export default function App() {
             </svg>
             <h1>달 착륙지 비교</h1>
           </div>
-          <p className="finding">{finding}</p>
+          <p className="intro">착륙 지점과 시작 시각을 고르고, 태양과 지구가 함께 보이는 시간을 비교하세요.</p>
+          <div className={`comparison-status${comparisonReady ? ' is-ready' : ''}`} role="status" aria-live="polite" aria-atomic="true">
+            <div className="status-heading">
+              <span>{comparisonReady ? '비교 결과' : '비교 준비'}</span>
+              <span className="ready-count">{readyCount} / {columns.length}개 준비</span>
+            </div>
+            <p className="finding">{finding}</p>
+          </div>
 
           <div className="scenario-bar">
             <div className="bar-row">
-              <span className="d-label">관찰 기간 D</span>
+              <span className="d-label">관찰 기간</span>
               <span className="d-preset" role="group" aria-label="관찰 기간 D">
                 {[7, 14, 28].map((d) => (
                   <button
@@ -711,6 +729,14 @@ export default function App() {
         <Moon3D columns={columns} canAdd={canAdd} onAdd={addColumn} />
       </header>
 
+      <div className="comparison-heading">
+        <div><h2>지점별 비교</h2><p>각 열에서 지점과 시작 시각을 바꿀 수 있습니다. 시간은 모두 UTC 기준입니다.</p></div>
+        <div className="visibility-legend" aria-label="타임라인 색상 안내">
+          <span><i className="legend-sun" />태양 보임</span>
+          <span><i className="legend-earth" />지구 보임</span>
+          <span><i className="legend-dark" />보이지 않음</span>
+        </div>
+      </div>
       {columns.length === 0 ? (
         <div className="state-box">
           <p>지점을 고르세요</p>

@@ -729,3 +729,97 @@ button.marker.cluster:hover:not(:disabled) {
     transform: translate(-50%, -50%);
   }
 }
+
+/* 비교 작업의 순서와 상태를 읽기 쉽게 구분한다. */
+:root {
+  --ground: #090c12;
+  --surface: #121720;
+  --raised: #202938;
+  --border: #303949;
+  --rule: #2a3240;
+  --control: #566176;
+  --muted: #bdc7d6;
+  --radius-card: 14px;
+  --control-height: 42px;
+  --gap: 18px;
+}
+.hero { grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 40px; margin-bottom: 32px; }
+.intro { margin-top: 12px; color: var(--muted); line-height: 1.7; max-width: 42em; }
+.comparison-status { margin-top: 22px; padding: 18px 20px; border: 1px solid var(--border); border-left: 3px solid var(--focus); background: var(--surface); border-radius: 10px; }
+.comparison-status.is-ready { border-left-color: var(--sunlit); }
+.status-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.ready-count { font-weight: 400; }
+.finding { margin-top: 8px; max-width: none; font-size: 18px; line-height: 1.65; overflow-wrap: anywhere; }
+.scenario-bar { margin-top: 20px; gap: 14px; }
+.map-note { margin-top: 20px; }
+.comparison-heading { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; padding: 20px 0; border-top: 1px solid var(--border); }
+.comparison-heading h2 { margin: 0 0 6px; font-size: 19px; line-height: 1.4; }
+.comparison-heading p { font-size: 13px; color: var(--muted); }
+.visibility-legend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: 12px; }
+.visibility-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.visibility-legend i { width: 10px; height: 10px; border-radius: 3px; }
+.legend-sun { background: var(--sunlit); }
+.legend-earth { background: var(--earth); }
+.legend-dark { background: var(--night); border: 1px solid var(--control); }
+.column { padding: 22px; }
+.column:has(.best) { border-color: #8a7032; }
+.controls { display: grid; gap: 7px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.controls input { width: 100%; min-width: 0; }
+.t0-label { font-size: 12px; }
+.lead { padding: 16px; border-radius: 10px; background: #1a2230; margin-top: 20px; }
+.lead-value { margin-top: 8px; font-size: clamp(24px, 2.2vw, 32px); }
+.lead-of { display: block; font-size: 13px; line-height: 20px; }
+.metric-grid { gap: 0 16px; }
+.metric .title { font-size: 13px; line-height: 20px; }
+.metric .value { font-size: 20px; margin-top: 5px; }
+.state-box { line-height: 1.7; background: #171e29; }
+.state-box button { margin: 8px 4px 0; }
+.footnote { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); max-width: none; line-height: 1.8; }
+@media (max-width: 1000px) {
+  .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 280px); gap: 24px; }
+}
+@media (max-width: 760px) {
+  .hero { grid-template-columns: minmax(0, 1fr); }
+  .moon { max-width: 280px; }
+  .column { padding: 18px; }
+  .comparison-status { padding: 16px; }
+  .bar-row select { flex: 1 1 180px; }
+  .finding { font-size: 16px; }
+  .lead-value { font-size: 28px; }
+}
+
+.hero { grid-template-columns: minmax(0, 1fr) minmax(360px, 40%); align-items: start; gap: 32px; }
+.moon { margin-top: 75px; margin-bottom: 20px; max-width: none; }
+.moon-heading { position: absolute; bottom: calc(100% + 16px); left: 0; right: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.moon-heading strong { display: block; font-size: 16px; }
+.moon-heading span { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.moon-heading button { flex: none; font-size: 12px; }
+.zoom-readout { position: absolute; top: 8px; left: 10px; z-index: 1; background: #121720dd; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; pointer-events: none; }
+.hero:has(.moon.is-expanded) { grid-template-columns: minmax(0, 1fr); }
+.moon.is-expanded { width: min(100%, 760px); justify-self: center; }
+.overlap-meter, .mini-track { overflow: hidden; background: #343c49; border-radius: 6px; height: 10px; margin-top: 14px; }
+.overlap-meter > span { display: block; height: 100%; background: var(--sunlit); }
+.metric-explanation { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 10px; }
+.darkness-summary { padding: 16px 0; border-bottom: 1px solid var(--rule); }
+.darkness-summary > span { display: block; color: var(--muted); font-size: 12px; }
+.darkness-summary > strong { display: block; font-size: 24px; line-height: 1.5; margin-top: 5px; }
+.darkness-summary.has-darkness > strong { color: #ffbd83; }
+.darkness-summary p { color: var(--muted); font-size: 12px; line-height: 1.7; margin-top: 4px; }
+.availability-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 18px 0; }
+.availability-pair span { display: block; color: var(--muted); font-size: 12px; }
+.availability-pair strong { display: block; font-size: 24px; line-height: 1.5; margin-top: 4px; }
+.mini-track { height: 5px; margin-top: 8px; }
+.mini-track i { display: block; height: 100%; }
+.timeline-heading { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 12px; font-size: 13px; }
+.timeline-heading span { font-size: 11px; color: var(--muted); }
+.secondary-metrics { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 14px; }
+.secondary-metrics summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; }
+@media (max-width: 900px) {
+ .hero { grid-template-columns: minmax(0, 1fr); }
+ .moon { width: min(100%, 400px); justify-self: center; }
+ .moon.is-expanded { width: min(100%, 760px); }
+}
+
+/* 구체 자체의 실루엣만 보이도록 원형 창과 테두리를 제거한다. */
+.moon-view { border: 0; border-radius: 0; overflow: visible; }
+.moon-fallback { border-radius: 0; object-fit: contain; }

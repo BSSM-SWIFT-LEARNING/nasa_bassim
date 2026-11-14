@@ -1,8 +1,11 @@
+import * as THREE from 'three';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent } from 'react';
 
 import {
   BASE_RADIUS,
+  CAMERA_DISTANCE,
+  CAMERA_FOCAL,
   centerOn,
   lookAt,
   normalize,
@@ -21,7 +24,7 @@ import { SITES } from './sites';
 const SURFACE = '/img/moon-surface.jpg';
 const SOUTH_CAP = '/img/lunar-south-pole.jpg';
 // 고도 자료(LOLA)에서 미리 계산한 경사 지도. R은 동쪽, G는 북쪽 경사이고 0.5가 평지다.
-const RELIEF = '/img/moon-relief.jpg';
+
 
 const MAX_ZOOM = 16;
 const CLUSTER_PX = 18; // 이보다 가까이 찍히는 지점은 하나로 묶는다
@@ -36,132 +39,75 @@ const WHOLE: View = { q: lookAt(siteVector(-25, 12), [0, 1, 0]), zoom: 1 };
 // 남극 보기: 경도 0°(지구 쪽)가 위로 오게 남극 지방을 내려다본다.
 const POLE: View = { q: lookAt(siteVector(-85, 15), [0, 0, 1]), zoom: 2.6 };
 
-const VERT = `
-attribute vec2 aPos;
-varying vec2 vP;
-void main() {
-  vP = aPos;
-  gl_Position = vec4(aPos, 0.0, 1.0);
-}`;
-
-// 사각형 하나에 구를 직접 그린다(정사영). 화면의 각 점에서 구 표면의 법선을 구하고,
-// 그 법선을 달 좌표계로 돌려 위도·경도를 얻어 표면 사진을 읽는다.
-const FRAG = `
-precision highp float;
-uniform sampler2D uSurface;
-uniform sampler2D uCap;
-uniform sampler2D uRelief;
-uniform mat3 uInv;   // view → world
-uniform float uR;    // 달 반지름 (그림 영역 반폭 = 1)
-uniform float uPx;   // 화면 1px의 크기 (같은 단위)
-varying vec2 vP;
-
-void main() {
-  vec2 p = vP / uR;
-  float d = length(p);
-  if (d > 1.0) { gl_FragColor = vec4(0.0); return; }
-  vec3 nv = vec3(p, sqrt(1.0 - d * d));
-  vec3 n = uInv * nv;
-
-  float lat = asin(clamp(n.y, -1.0, 1.0));
-  float lon = atan(n.x, n.z);
-  vec2 uv = vec2(lon / 6.2831853 + 0.5, 0.5 - lat / 3.14159265);
-  vec3 col = texture2D(uSurface, uv).rgb * 0.92;
-
-  // 실제 지형의 경사로 법선을 기울여 분화구와 산이 빛을 받게 한다. 경사는 보기 좋게 과장한다.
-  vec2 slope = (texture2D(uRelief, uv).rg - 0.5) / 1.25;
-  vec3 east = normalize(vec3(n.z, 0.0, -n.x) + vec3(1e-6, 0.0, 0.0));
-  vec3 north = cross(n, east);
-  vec3 nb = normalize(n - 4.0 * (slope.x * east + slope.y * north));
-
-  // 80°S 이남은 남극 모자이크(극평사도법, 가장자리 80°S, 위쪽이 경도 0°)로 바꿔 그린다.
-  // 모자이크에는 그림자가 이미 찍혀 있으므로 그 안에서는 경사 음영을 쓰지 않는다.
-  float cap = smoothstep(-1.3963, -1.5010, lat);
-  if (cap > 0.0) {
-    vec2 q = vec2(n.x, -n.z) / ((1.0 - n.y) * 0.0874887);
-    vec3 c = pow(texture2D(uCap, 0.5 + 0.5 * q).rgb, vec3(0.52)) * vec3(1.1, 1.08, 1.04);
-    col = mix(col, c, cap);
-    nb = normalize(mix(nb, n, cap));
-  }
-
-  // 빛은 화면 왼쪽 위에서 온다. 달을 돌려도 둥근 입체감이 유지된다.
-  vec3 L = normalize(vec3(-0.55, 0.5, 0.67));
-  float lit = max(dot(nb * uInv, L), 0.0) * smoothstep(-0.05, 0.2, dot(nv, L));
-  col *= 0.16 + 1.05 * lit;
-
-  float a = clamp((1.0 - d) * uR / (1.5 * uPx), 0.0, 1.0);
-  gl_FragColor = vec4(col * a, a);
-}`;
-
 interface Renderer {
-  gl: WebGLRenderingContext;
-  uInv: WebGLUniformLocation | null;
-  uR: WebGLUniformLocation | null;
-  uPx: WebGLUniformLocation | null;
+  draw: (q: Quat, zoom: number, size: number) => void;
+  dispose: () => void;
 }
 
 function createRenderer(canvas: HTMLCanvasElement, onTexture: () => void): Renderer | null {
-  const gl = canvas.getContext('webgl', { alpha: true, antialias: false });
-  if (!gl) return null;
-  const compile = (type: number, src: string) => {
-    const s = gl.createShader(type);
-    if (!s) return null;
-    gl.shaderSource(s, src);
-    gl.compileShader(s);
-    return gl.getShaderParameter(s, gl.COMPILE_STATUS) ? s : null;
+  let renderer: THREE.WebGLRenderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  } catch {
+    return null;
+  }
+  renderer.setClearColor(0x000000, 0);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(2 * Math.atan(1 / CAMERA_FOCAL) * 180 / Math.PI, 1, 0.01, 100);
+  camera.position.z = CAMERA_DISTANCE;
+  const geometry = new THREE.SphereGeometry(1, 128, 96);
+  const material = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });
+  let alive = true;
+  const loader = new THREE.TextureLoader();
+  const loaded = () => { if (alive) onTexture(); };
+  const surface = loader.load(SURFACE, loaded);
+  const cap = loader.load(SOUTH_CAP, loaded);
+  surface.colorSpace = cap.colorSpace = THREE.SRGBColorSpace;
+  surface.flipY = cap.flipY = false;
+  surface.wrapS = THREE.RepeatWrapping;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.moonSurface = { value: surface };
+    shader.uniforms.moonCap = { value: cap };
+    shader.vertexShader = 'varying vec3 moonLocal;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nmoonLocal = position;');
+    shader.fragmentShader = 'varying vec3 moonLocal; uniform sampler2D moonSurface; uniform sampler2D moonCap;\n' + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace('#include <map_fragment>', `
+      vec3 n = normalize(moonLocal);
+      float lat = asin(clamp(n.y, -1.0, 1.0));
+      vec2 uv = vec2(atan(n.x, n.z) / 6.2831853 + 0.5, 0.5 - lat / 3.14159265);
+      vec3 color = texture2D(moonSurface, uv).rgb;
+      float capWeight = 1.0 - smoothstep(-1.5010, -1.3963, lat);
+      if (capWeight > 0.0) {
+        vec2 capUv = 0.5 + 0.5 * vec2(n.x, -n.z) / ((1.0 - n.y) * 0.0874887);
+        color = mix(color, texture2D(moonCap, capUv).rgb, capWeight);
+      }
+      diffuseColor.rgb *= color;
+    `);
   };
-  const vs = compile(gl.VERTEX_SHADER, VERT);
-  const fs = compile(gl.FRAGMENT_SHADER, FRAG);
-  const prog = gl.createProgram();
-  if (!vs || !fs || !prog) return null;
-  gl.attachShader(prog, vs);
-  gl.attachShader(prog, fs);
-  gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
-  gl.useProgram(prog);
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-  const aPos = gl.getAttribLocation(prog, 'aPos');
-  gl.enableVertexAttribArray(aPos);
-  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-  // 사진이 도착하기 전에는 회색 구로 그린다.
-  const texture = (unit: number, name: string, src: string, repeatX: boolean) => {
-    const tex = gl.createTexture();
-    const bind = () => {
-      gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-    };
-    bind();
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([128, 128, 128, 255]));
-    gl.uniform1i(gl.getUniformLocation(prog, name), unit);
-    const img = new Image();
-    img.onload = () => {
-      bind();
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-      const pot = (n: number) => (n & (n - 1)) === 0;
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(
-        gl.TEXTURE_2D,
-        gl.TEXTURE_WRAP_S,
-        repeatX && pot(img.width) && pot(img.height) ? gl.REPEAT : gl.CLAMP_TO_EDGE
-      );
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      onTexture();
-    };
-    img.src = src;
-  };
-  texture(0, 'uSurface', SURFACE, true);
-  texture(1, 'uCap', SOUTH_CAP, false);
-  texture(2, 'uRelief', RELIEF, true);
-
+  const moon = new THREE.Mesh(geometry, material);
+  scene.add(moon);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  const key = new THREE.DirectionalLight(0xffffff, 2.6);
+  key.position.set(-3, 2, 4);
+  scene.add(key);
   return {
-    gl,
-    uInv: gl.getUniformLocation(prog, 'uInv'),
-    uR: gl.getUniformLocation(prog, 'uR'),
-    uPx: gl.getUniformLocation(prog, 'uPx'),
+    draw(q, zoom, size) {
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setSize(size, size, false);
+      camera.zoom = zoom;
+      camera.updateProjectionMatrix();
+      moon.quaternion.set(...q);
+      renderer.render(scene, camera);
+    },
+    dispose() {
+      alive = false;
+      surface.dispose();
+      cap.dispose();
+      geometry.dispose();
+      material.dispose();
+      renderer.dispose();
+    },
   };
 }
 
@@ -227,9 +173,10 @@ export function Moon3D({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<Renderer | null>(null);
   const [failed, setFailed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [size, setSize] = useState(0);
   const [, setTextures] = useState(0);
-  const [view, setView] = useState<View>(() => (reducedMotion() ? POLE : WHOLE));
+  const [view, setView] = useState<View>(WHOLE);
 
   // 애니메이션과 끌기 핸들러가 최신 값을 읽을 수 있게 거울을 둔다.
   const viewRef = useRef(view);
@@ -248,8 +195,9 @@ export function Moon3D({
       return;
     }
     const from = viewRef.current;
-    const start = performance.now();
+    let start: number | null = null;
     const step = (now: number) => {
+      start ??= now;
       const t = Math.min(1, (now - start) / ms);
       const e = easeInOut(t);
       setView({
@@ -261,16 +209,7 @@ export function Moon3D({
     raf.current = requestAnimationFrame(step);
   };
 
-  // 처음 한 번: 전체 모습에서 남극으로 돌아 들어간다. 달이 입체라는 것을 보여 주는 유일한 연출이다.
-  useEffect(() => {
-    if (reducedMotion()) return;
-    const timer = window.setTimeout(() => animateTo(POLE, 1800), 500);
-    return () => {
-      window.clearTimeout(timer);
-      stopAnimation();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => () => cancelAnimationFrame(raf.current), []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -283,6 +222,7 @@ export function Moon3D({
     if (!r) setFailed(true);
     return () => {
       alive = false;
+      r?.dispose();
       rendererRef.current = null;
     };
   }, []);
@@ -295,25 +235,26 @@ export function Moon3D({
     return () => ro.disconnect();
   }, []);
 
-  // 상태가 바뀔 때마다 다시 그린다. 사각형 하나라 비용이 작다.
+  // Native listener must be non-passive so a wheel gesture zooms the map.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      cancelAnimationFrame(raf.current);
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1);
+      setView((v) => ({ ...v, zoom: Math.min(MAX_ZOOM, Math.max(1, v.zoom * Math.exp(-Math.max(-200, Math.min(200, delta)) * 0.003))) }));
+    };
+    el.addEventListener('wheel', wheel, { passive: false });
+    return () => el.removeEventListener('wheel', wheel);
+  }, []);
+
+  // 조작이나 텍스처 로딩 시에만 그린다.
   useEffect(() => {
     const r = rendererRef.current;
     const canvas = canvasRef.current;
     if (!r || !canvas || size <= 0) return;
-    const px = Math.max(1, Math.round(size * Math.min(window.devicePixelRatio || 1, 2)));
-    if (canvas.width !== px) {
-      canvas.width = px;
-      canvas.height = px;
-    }
-    const { gl } = r;
-    gl.viewport(0, 0, px, px);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    // 행 우선 world→view 행렬을 그대로 넘기면 GL은 전치(view→world)로 읽는다.
-    gl.uniformMatrix3fv(r.uInv, false, new Float32Array(quatToMat3(view.q)));
-    gl.uniform1f(r.uR, BASE_RADIUS * view.zoom);
-    gl.uniform1f(r.uPx, 2 / px);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    r.draw(view.q, view.zoom, size);
   });
 
   const marks = useMemo(() => {
@@ -417,7 +358,11 @@ export function Moon3D({
     );
 
   return (
-    <div className="moon" ref={wrapRef}>
+    <div className={`moon${expanded ? ' is-expanded' : ''}`} ref={wrapRef}>
+      <div className="moon-heading"><div><strong>착륙 후보지 탐색</strong><span>끌어서 회전 · 스크롤로 확대 · 지점을 눌러 비교</span></div>
+        <button type="button" aria-pressed={expanded} onClick={() => setExpanded((v) => !v)}>{expanded ? '작게 보기' : '크게 보기'}</button>
+      </div>
+      <div className="zoom-readout" aria-label={`확대 배율 ${view.zoom.toFixed(1)}배`}>{view.zoom.toFixed(1)}×</div>
       <div className="moon-view">
         <canvas
           ref={canvasRef}
@@ -455,7 +400,7 @@ export function Moon3D({
             >
               {g.members.length}
               <span className="marker-label">
-                {g.members.length}곳
+                {g.members.length}곳 · 눌러 확대
                 <Chips cols={cols} />
               </span>
             </button>

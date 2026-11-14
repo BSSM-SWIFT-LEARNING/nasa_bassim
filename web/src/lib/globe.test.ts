@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  BASE_RADIUS,
+  CAMERA_DISTANCE,
+  CAMERA_FOCAL,
   centerOn,
   lookAt,
   projectToScreen,
@@ -98,7 +99,7 @@ describe('projectToScreen', () => {
     expect(c.x).toBeCloseTo(0);
     expect(c.y).toBeCloseTo(0);
     expect(c.visible).toBe(true);
-    expect(projectToScreen(m, 1, siteVector(30, 0)).y).toBeCloseTo(-BASE_RADIUS * 0.5);
+    expect(projectToScreen(m, 1, siteVector(30, 0)).y).toBeCloseTo(-CAMERA_FOCAL * 0.5 / (CAMERA_DISTANCE - Math.cos(Math.PI / 6)));
   });
 
   it('뒷면의 점은 보이지 않는다', () => {
@@ -108,5 +109,20 @@ describe('projectToScreen', () => {
   it('확대해서 그림 영역 밖으로 나간 점은 보이지 않는다', () => {
     expect(projectToScreen(m, 1, siteVector(0, 60)).visible).toBe(true);
     expect(projectToScreen(m, 4, siteVector(0, 60)).visible).toBe(false);
+  });
+});
+
+describe('원근 투영 경계', () => {
+  const m = quatToMat3([0, 0, 0, 1]);
+  it('원근 카메라에서 구 뒤에 가려진 가장자리 지점을 숨긴다', () => {
+    expect(projectToScreen(m, 1, siteVector(0, 80)).visible).toBe(false);
+    expect(projectToScreen(m, 1, siteVector(0, 60)).visible).toBe(true);
+  });
+  it('확대해도 표면 점의 중심 방향을 유지한다', () => {
+    const v = siteVector(10, 10);
+    const a = projectToScreen(m, 1, v);
+    const b = projectToScreen(m, 2, v);
+    expect(b.x).toBeCloseTo(a.x * 2);
+    expect(b.y).toBeCloseTo(a.y * 2);
   });
 });
