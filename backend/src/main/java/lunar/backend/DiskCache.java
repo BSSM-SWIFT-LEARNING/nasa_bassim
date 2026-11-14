@@ -5,6 +5,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -29,7 +30,16 @@ public class DiskCache {
     public void put(String key, String text) {
         try {
             Files.createDirectories(dir);
-            Files.writeString(pathFor(key), text);
+            // Same directory keeps the rename on one filesystem. Readers see
+            // either the previous complete response or the new complete response.
+            Path temp = Files.createTempFile(dir, "ephemeris-", ".tmp");
+            try {
+                Files.writeString(temp, text);
+                Files.move(temp, pathFor(key),
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } finally {
+                Files.deleteIfExists(temp);
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
