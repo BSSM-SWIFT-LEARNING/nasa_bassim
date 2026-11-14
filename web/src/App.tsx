@@ -1,3 +1,5 @@
+import { comparisonSummary, fmtDuration } from './lib/comparison';
+import type { ComparisonColumn } from './lib/comparison';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { DATA_RANGE, DAY_MS, clampT0, parseT0Input } from './lib/ephemeris';
@@ -76,11 +78,6 @@ const fmtDate = (ms: number) => {
   return `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 };
 
-const fmtDuration = (ms: number) => {
-  const days = Math.floor(ms / DAY_MS);
-  const hours = Math.round((ms - days * DAY_MS) / HOUR_MS);
-  return `${days}일 ${hours}시간`;
-};
 
 function Badge() {
   return <span className="badge">지형 미반영</span>;
@@ -626,30 +623,16 @@ export default function App() {
   // 화면의 질문에 대한 답: 태양과 지구가 함께 보이는 시간이 가장 긴 열.
   // 각 열이 그리는 값과 같은 timeline()에서 계산해 두 곳의 숫자가 어긋나지 않게 한다.
   const { finding, bestNos } = useMemo(() => {
-    const loaded: { no: number; ms: number }[] = [];
-    columns.forEach((c, i) => {
+    const states: ComparisonColumn[] = columns.map((c, i) => {
+      const no = i + 1;
       const key = columnKey(c);
-      const d = key === null ? undefined : data[key];
-      if (d?.status !== 'ok' || !d.sun || !d.earth) return;
-      loaded.push({ no: i + 1, ms: timeline(d.sun, d.earth, parseT0Input(c.t0), days).bothVisibleMs });
+      if (key === null) return { no, status: 'missing' };
+      const d = data[key];
+      if (!d) return { no, status: 'loading' };
+      if (d.status === 'error' || !d.sun || !d.earth) return { no, status: 'error' };
+      return { no, status: 'ready', ms: timeline(d.sun, d.earth, parseT0Input(c.t0), days).bothVisibleMs };
     });
-    const none = { finding: null as string | null, bestNos: new Set<number>() };
-    if (loaded.length === 0) return none;
-    const best = Math.max(...loaded.map((l) => l.ms));
-    const top = loaded.filter((l) => l.ms === best);
-    const dur = fmtDuration(best);
-    // 모든 열이 같으면 "가장 긴" 열이 없으므로 표시하지 않는다.
-    if (loaded.length > 1 && top.length === loaded.length)
-      return {
-        ...none,
-        finding: `태양과 지구가 함께 보이는 시간은 ${loaded.length}개 열 모두 ${dur}으로 같다.`,
-      };
-    const names = top.map((l) => `${l.no}열`);
-    const who = names.length === 2 ? names.join('과 ') : names.join(', ');
-    return {
-      finding: `태양과 지구가 함께 보이는 시간은 ${who}이 ${days}일 중 ${dur}으로 가장 길다.`,
-      bestNos: new Set(loaded.length > 1 ? top.map((l) => l.no) : []),
-    };
+    return comparisonSummary(states, days);
   }, [columns, data, days]);
 
   const canAdd = columns.length < 4;
@@ -669,7 +652,7 @@ export default function App() {
             </svg>
             <h1>달 착륙지 비교</h1>
           </div>
-          <p className="finding">{finding ?? '각 열의 데이터를 불러오는 중이다.'}</p>
+          <p className="finding">{finding}</p>
 
           <div className="scenario-bar">
             <div className="bar-row">
