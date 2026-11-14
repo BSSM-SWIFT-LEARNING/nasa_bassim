@@ -13,6 +13,7 @@ import type { T0Field } from './lib/t0Field';
 import type { Ephemeris } from './lib/ephemeris';
 import { eventMetric, stats, timeline } from './lib/metrics';
 import { tickStepMs } from './lib/timelineTicks';
+import { Moon3D } from './Moon3D';
 import { SITES } from './sites';
 
 const HOUR_MS = 3600_000;
@@ -88,10 +89,7 @@ function Badge() {
 function MetricCard({ title, value, sub }: { title: string; value: string; sub?: string }) {
   return (
     <div className="metric">
-      <div className="title">
-        {title}
-        <Badge />
-      </div>
+      <div className="title">{title}</div>
       <div className="value">{value}</div>
       <div className="sub">{sub ?? ''}</div>
     </div>
@@ -108,6 +106,8 @@ function TimelineSvg({
   t0,
   showCursor,
   width,
+  barH,
+  cursorY,
 }: {
   cells: boolean[];
   times: number[];
@@ -118,46 +118,58 @@ function TimelineSvg({
   t0: number;
   showCursor: boolean;
   width: number;
+  barH: number;
+  cursorY: [number, number];
 }) {
   const W = width;
   const x = (t: number) => ((t - axisStart) / (axisEnd - axisStart)) * W;
-  const cellW = (HOUR_MS / (axisEnd - axisStart)) * W;
+  // 1시간 칸을 따로 그리면 칸 경계마다 안티에일리어싱 줄무늬가 비친다.
+  // 같은 값이 이어지는 칸은 하나의 사각형으로 합쳐 그린다.
+  const runs: { start: number; end: number; v: boolean }[] = [];
+  cells.forEach((v, i) => {
+    const t = times[i]!;
+    const last = runs[runs.length - 1];
+    if (last && last.v === v && last.end === t) last.end = t + HOUR_MS;
+    else runs.push({ start: t, end: t + HOUR_MS, v });
+  });
   return (
     <g>
-      {cells.map((v, i) => (
+      {runs.map((r) => (
         <rect
-          key={i}
-          x={x(times[i]!)}
+          key={r.start}
+          x={x(r.start)}
           y={rowY}
-          width={Math.max(cellW - 0.4, 0.4)}
-          height={14}
-          fill={v ? color : 'var(--dark)'}
+          width={x(r.end) - x(r.start)}
+          height={barH}
+          fill={r.v ? color : 'var(--dark)'}
+          shapeRendering="crispEdges"
         />
       ))}
       {showCursor ? (
-        <line x1={x(t0)} x2={x(t0)} y1={14} y2={58} stroke="#c00" strokeWidth={1.2} />
+        <>
+          <line x1={x(t0)} x2={x(t0)} y1={cursorY[0]} y2={cursorY[1]} stroke="var(--panel)" strokeWidth={6} />
+          <line x1={x(t0)} x2={x(t0)} y1={cursorY[0]} y2={cursorY[1]} stroke="var(--cursor)" strokeWidth={2.5} />
+        </>
       ) : null}
     </g>
   );
 }
 
+type Timeline = ReturnType<typeof timeline>;
+
 function Timelines({
-  sun,
-  earth,
+  tl,
   t0,
   days,
   axisStart,
   axisEnd,
 }: {
-  sun: Ephemeris;
-  earth: Ephemeris;
+  tl: Timeline;
   t0: number;
   days: number;
   axisStart: number;
   axisEnd: number;
 }) {
-  const tl = timeline(sun, earth, t0, days);
-
   // svg는 width:100%로 viewBox 600이 화면 폭에 맞게 축소된다. 눈금 글자가
   // 실제 렌더링 기준 11px가 되도록 표시 폭을 재서 viewBox 단위 글자 크기를 역산한다.
   const svgRef = useRef<SVGSVGElement>(null);
@@ -180,10 +192,16 @@ function Timelines({
   const ticks: number[] = [];
   for (let t = Math.ceil(axisStart / tickStep) * tickStep; t <= axisEnd; t += tickStep)
     ticks.push(t);
-  const tickTextY = 70 + font;
+  // 낮·밤 띠가 이 화면의 주인공이라 렌더링 기준으로도 충분히 두껍게 그린다.
+  const barH = Math.max(28, 22 / scale);
+  const gap = 6;
+  const sunY = 4;
+  const earthY = sunY + barH + gap;
+  const axisY = earthY + barH + gap;
+  const tickTextY = axisY + 6 + font;
   const vbH = tickTextY + font * 0.4;
   return (
-    <div>
+    <div className="timeline-wrap">
       <svg
         className="timeline"
         ref={svgRef}
@@ -191,39 +209,46 @@ function Timelines({
         role="img"
         aria-label={`태양과 지구 가시성 타임라인. t0 이후 ${days}일 동안 둘 다 가능한 시간은 ${fmtDuration(tl.bothVisibleMs)}`}
       >
-        <text x={0} y={30} fontSize={font} fill="var(--muted)">
+        <text x={0} y={sunY + barH / 2} fontSize={font} fill="var(--muted)" dominantBaseline="central">
           태양
         </text>
-        <text x={0} y={52} fontSize={font} fill="var(--muted)">
+        <text x={0} y={earthY + barH / 2} fontSize={font} fill="var(--muted)" dominantBaseline="central">
           지구
         </text>
         <g transform={`translate(${labelW},0)`}>
+          {/* 공통 시간축 전체를 옅은 띠로 깔아, 이 열의 관찰 기간이 축의 어디인지 보이게 한다. */}
+          <rect x={0} y={sunY} width={W} height={barH} fill="var(--track)" />
+          <rect x={0} y={earthY} width={W} height={barH} fill="var(--track)" />
           <TimelineSvg
             cells={tl.sun.cells}
             times={tl.sun.times}
-            rowY={20}
+            rowY={sunY}
             color="var(--sunlit)"
             axisStart={axisStart}
             axisEnd={axisEnd}
             t0={t0}
             showCursor
             width={W}
+            barH={barH}
+            cursorY={[0, axisY]}
           />
           <TimelineSvg
             cells={tl.earth.cells}
             times={tl.earth.times}
-            rowY={42}
+            rowY={earthY}
             color="var(--earth)"
             axisStart={axisStart}
             axisEnd={axisEnd}
             t0={t0}
             showCursor={false}
             width={W}
+            barH={barH}
+            cursorY={[0, axisY]}
           />
-          <line x1={0} x2={W} y1={64} y2={64} stroke="var(--border)" />
+          <line x1={0} x2={W} y1={axisY} y2={axisY} stroke="var(--border)" />
           {ticks.map((t) => (
             <g key={t}>
-              <line x1={x(t)} x2={x(t)} y1={64} y2={69} stroke="var(--muted)" />
+              <line x1={x(t)} x2={x(t)} y1={axisY} y2={axisY + 5} stroke="var(--muted)" />
               <text x={x(t)} y={tickTextY} fontSize={font} fill="var(--muted)" textAnchor="middle">
                 {fmtDate(t).slice(0, 5)}
               </text>
@@ -231,7 +256,6 @@ function Timelines({
           ))}
         </g>
       </svg>
-      <div className="timeline-caption">둘 다 가능 {fmtDuration(tl.bothVisibleMs)}</div>
     </div>
   );
 }
@@ -243,6 +267,8 @@ function parseCoord(raw: string, lo: number, hi: number): number | null {
 
 function Column({
   spec,
+  index,
+  best,
   days,
   data,
   loading,
@@ -253,6 +279,8 @@ function Column({
   axisEnd,
 }: {
   spec: ColumnSpec;
+  index: number;
+  best: boolean;
   days: number;
   data: SiteData | undefined;
   loading: boolean;
@@ -331,8 +359,15 @@ function Column({
 
   return (
     <div className="column">
-      <div>
+      <div className="column-head">
+        <span className="col-no" aria-hidden="true">
+          {index}
+        </span>
+        <h2 className="sr-only">
+          {index}열, {isCustom ? '직접 입력 좌표' : site?.name}
+        </h2>
         <select
+          className="site-select"
           value={spec.site}
           onChange={(e) => onChange({ ...spec, site: e.target.value })}
           aria-label="지점"
@@ -343,7 +378,33 @@ function Column({
             </option>
           ))}
           <option value={CUSTOM}>직접 좌표 입력</option>
-        </select>{' '}
+        </select>
+        <button
+          className="remove"
+          data-remove-col={spec.id}
+          onClick={onRemove}
+          aria-label="열 제거"
+        >
+          ×
+        </button>
+      </div>
+      <div className="coords">
+        <span>
+          {isCustom && spec.lat !== undefined && spec.lonE !== undefined
+            ? `위도 ${spec.lat}°, 동경 ${spec.lonE}°`
+            : !isCustom && site
+              ? `위도 ${site.lat}°, 동경 ${site.lon_e}°`
+              : '좌표 미입력'}
+        </span>
+        {!isCustom && site ? (
+          <a className="source" href={site.sourceUrl}>
+            좌표 출처
+          </a>
+        ) : null}
+        <Badge />
+      </div>
+      <label className="controls">
+        <span className="t0-label">시작 시각 t0 (UTC)</span>
         <input
           type="datetime-local"
           value={field.draft ?? appliedT0}
@@ -356,11 +417,8 @@ function Column({
             if (e.key === 'Enter') commit();
           }}
           aria-label="t0 (UTC)"
-        />{' '}
-        <button data-remove-col={spec.id} onClick={onRemove} aria-label="열 제거">
-          ×
-        </button>
-      </div>
+        />
+      </label>
       {field.warn ? <div className="warn">계산 범위 2026-11-01~2027-05-01</div> : null}
       {isCustom ? (
         <form
@@ -405,28 +463,6 @@ function Column({
           {coordError ? <div className="warn">{coordError}</div> : null}
         </form>
       ) : null}
-      <h2>
-        {isCustom ? '직접 입력 좌표' : site?.name} <Badge />
-      </h2>
-      <div className="coords">
-        {isCustom && spec.lat !== undefined && spec.lonE !== undefined
-          ? `위도 ${spec.lat}°, 동경 ${spec.lonE}° · `
-          : !isCustom && site
-            ? `위도 ${site.lat}°, 동경 ${site.lon_e}° · `
-            : ''}
-        t0 {appliedT0.replace('T', ' ')} UTC
-      </div>
-      <div className="source">
-        {isCustom ? (
-          spec.lat !== undefined && spec.lonE !== undefined ? (
-            <span>
-              좌표 {spec.lat}°, {spec.lonE}°E
-            </span>
-          ) : null
-        ) : site ? (
-          <a href={site.sourceUrl}>좌표 출처</a>
-        ) : null}
-      </div>
 
       {isCustom && spec.lat === undefined ? (
         <div className="state-box">위도와 동경을 입력하고 적용하세요</div>
@@ -441,6 +477,7 @@ function Column({
         </div>
       ) : (
         <ColumnBody
+          best={best}
           sun={data.sun!}
           earth={data.earth!}
           t0={t0}
@@ -454,6 +491,7 @@ function Column({
 }
 
 function ColumnBody({
+  best,
   sun,
   earth,
   t0,
@@ -461,6 +499,7 @@ function ColumnBody({
   axisStart,
   axisEnd,
 }: {
+  best: boolean;
   sun: Ephemeris;
   earth: Ephemeris;
   t0: number;
@@ -478,8 +517,21 @@ function ColumnBody({
       ? { value: m.text }
       : { value: `${m.days!.toFixed(1)}일`, sub: m.eventTime ? fmtDate(m.eventTime) : undefined };
 
+  const tl = timeline(sun, earth, t0, days);
+
   return (
     <>
+      <div className="lead">
+        <div className="lead-label">
+          태양과 지구가 함께 보이는 시간
+          {best ? <span className="best">가장 김</span> : null}
+        </div>
+        <div className="lead-value">
+          {fmtDuration(tl.bothVisibleMs)}
+          <span className="lead-of"> / {days}일</span>
+        </div>
+      </div>
+      <Timelines tl={tl} t0={t0} days={days} axisStart={axisStart} axisEnd={axisEnd} />
       <div className="metric-grid">
         <MetricCard title={nextSun.title} {...card(nextSun)} />
         <MetricCard title={nextEarth.title} {...card(nextEarth)} />
@@ -505,7 +557,6 @@ function ColumnBody({
           }
         />
       </div>
-      <Timelines sun={sun} earth={earth} t0={t0} days={days} axisStart={axisStart} axisEnd={axisEnd} />
     </>
   );
 }
@@ -572,49 +623,113 @@ export default function App() {
     return { axisStart: lo, axisEnd: hi };
   }, [columns, days]);
 
+  // 화면의 질문에 대한 답: 태양과 지구가 함께 보이는 시간이 가장 긴 열.
+  // 각 열이 그리는 값과 같은 timeline()에서 계산해 두 곳의 숫자가 어긋나지 않게 한다.
+  const { finding, bestNos } = useMemo(() => {
+    const loaded: { no: number; ms: number }[] = [];
+    columns.forEach((c, i) => {
+      const key = columnKey(c);
+      const d = key === null ? undefined : data[key];
+      if (d?.status !== 'ok' || !d.sun || !d.earth) return;
+      loaded.push({ no: i + 1, ms: timeline(d.sun, d.earth, parseT0Input(c.t0), days).bothVisibleMs });
+    });
+    const none = { finding: null as string | null, bestNos: new Set<number>() };
+    if (loaded.length === 0) return none;
+    const best = Math.max(...loaded.map((l) => l.ms));
+    const top = loaded.filter((l) => l.ms === best);
+    const dur = fmtDuration(best);
+    // 모든 열이 같으면 "가장 긴" 열이 없으므로 표시하지 않는다.
+    if (loaded.length > 1 && top.length === loaded.length)
+      return {
+        ...none,
+        finding: `태양과 지구가 함께 보이는 시간은 ${loaded.length}개 열 모두 ${dur}으로 같다.`,
+      };
+    const names = top.map((l) => `${l.no}열`);
+    const who = names.length === 2 ? names.join('과 ') : names.join(', ');
+    return {
+      finding: `태양과 지구가 함께 보이는 시간은 ${who}이 ${days}일 중 ${dur}으로 가장 길다.`,
+      bestNos: new Set(loaded.length > 1 ? top.map((l) => l.no) : []),
+    };
+  }, [columns, data, days]);
+
+  const canAdd = columns.length < 4;
+  const addColumn = (site: string) =>
+    setColumns((c) =>
+      c.length >= 4 ? c : [...c, { id: nextId++, site, t0: '2026-11-14T00:00' }]
+    );
+
   return (
     <>
-      <h1>달 착륙지 비교</h1>
-      <div className="scenario-bar">
-        <span>
-          관찰 기간 D:{' '}
-          <span className="d-preset">
-            {[7, 14, 28].map((d) => (
-              <button key={d} className={d === days ? 'active' : ''} onClick={() => setDays(d)}>
-                {d}일
+      <header className="hero">
+        <div className="hero-text">
+          <div className="product">
+            <svg className="mark" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M12 2a10 10 0 0 1 0 20z" fill="currentColor" />
+            </svg>
+            <h1>달 착륙지 비교</h1>
+          </div>
+          <p className="finding">{finding ?? '각 열의 데이터를 불러오는 중이다.'}</p>
+
+          <div className="scenario-bar">
+            <div className="bar-row">
+              <span className="d-label">관찰 기간 D</span>
+              <span className="d-preset" role="group" aria-label="관찰 기간 D">
+                {[7, 14, 28].map((d) => (
+                  <button
+                    key={d}
+                    className={d === days ? 'active' : ''}
+                    aria-pressed={d === days}
+                    onClick={() => setDays(d)}
+                  >
+                    {d}일
+                  </button>
+                ))}
+              </span>
+            </div>
+            <div className="bar-row">
+              <select
+                value={newSite}
+                onChange={(e) => setNewSite(e.target.value)}
+                aria-label="추가할 지점"
+              >
+                {SITES.map((s) => (
+                  <option key={s.slug} value={s.slug}>
+                    {s.name}
+                  </option>
+                ))}
+                <option value={CUSTOM}>직접 좌표 입력</option>
+              </select>
+              <button className="primary" disabled={!canAdd} onClick={() => addColumn(newSite)}>
+                열 추가
               </button>
-            ))}
-          </span>
-        </span>
-        <span className="spacer" />
-        <select value={newSite} onChange={(e) => setNewSite(e.target.value)} aria-label="추가할 지점">
-          {SITES.map((s) => (
-            <option key={s.slug} value={s.slug}>
-              {s.name}
-            </option>
-          ))}
-          <option value={CUSTOM}>직접 좌표 입력</option>
-        </select>
-        <button
-          disabled={columns.length >= 4}
-          onClick={() =>
-            setColumns((c) => [...c, { id: nextId++, site: newSite, t0: '2026-11-14T00:00' }])
-          }
-        >
-          열 추가
-        </button>
-        <button
-          onClick={() => {
-            setColumns(DEFAULT_COLUMNS);
-            setDays(DEFAULT_DAYS);
-          }}
-        >
-          이 시나리오를 처음으로
-        </button>
-      </div>
+              <button
+                onClick={() => {
+                  setColumns(DEFAULT_COLUMNS);
+                  setDays(DEFAULT_DAYS);
+                }}
+              >
+                이 시나리오를 처음으로
+              </button>
+            </div>
+          </div>
+
+          <p className="map-note">
+            달은 끌어서 돌릴 수 있다.{' '}
+            {canAdd
+              ? '달 위의 지점을 누르면 그 지점이 새 열로 추가된다.'
+              : '열은 4개까지 둘 수 있다.'}{' '}
+            숫자가 적힌 점은 가까이 모인 지점 묶음이고, 누르면 그쪽으로 확대된다.
+          </p>
+          <p className="stamp">
+            NASA/JPL Horizons 천체력, 2026-11-01부터 2027-05-01까지 1시간 간격
+          </p>
+        </div>
+        <Moon3D columns={columns} canAdd={canAdd} onAdd={addColumn} />
+      </header>
 
       {columns.length === 0 ? (
-        <div className="state-box" style={{ marginTop: 24 }}>
+        <div className="state-box">
           <p>지점을 고르세요</p>
           <button
             data-restore
@@ -630,12 +745,14 @@ export default function App() {
         </div>
       ) : (
         <div className="columns">
-          {columns.map((c) => {
+          {columns.map((c, i) => {
             const key = columnKey(c);
             return (
             <Column
               key={c.id}
               spec={c}
+              index={i + 1}
+              best={bestNos.has(i + 1)}
               days={days}
               data={key === null ? undefined : data[key]}
               loading={key !== null && data[key] === undefined}
@@ -661,6 +778,14 @@ export default function App() {
       <div className="footnote">
         지구 상한 limb 기준, 특정 지상국 가시성 아님. 전력량은 패널 방향과 효율에 따라 달라 계산하지
         않는다. 태양 고도가 낮을수록 수평 패널에 불리하다. 모든 지표는 지형 미반영(매끈한 구) 상한선이다.
+        <br />
+        달 표면과 고도:{' '}
+        <a href="https://svs.gsfc.nasa.gov/4720">NASA SVS CGI Moon Kit</a> (LROC 색 지도, LOLA 고도).
+        남극 지방:{' '}
+        <a href="https://commons.wikimedia.org/wiki/File:LRO_WAC_South_Pole_Mosaic.jpg">
+          LRO WAC South Pole Mosaic
+        </a>
+        , NASA/GSFC/Arizona State University. 모두 퍼블릭 도메인.
       </div>
     </>
   );
